@@ -12,3 +12,5 @@ __pycache__/
 *.pyc
 out/
 web/data/
+dist/
+web/version.json
