@@ -20,7 +20,7 @@ PROMPT = (
     "16-bit city-builder game: crisp pixel edges, clean flat shading, limited warm palette, no photo noise. "
     "Blue-grey slate roofs with dormers, cream limestone facades with neat rows of small windows, "
     "round fluffy pixel trees, clean grey asphalt streets with white lane markings, tiny pixel cars and people, "
-    "green lawns, blue water. Keep exactly the same layout, camera angle, geometry, buildings, streets and "
+    "green lawns; where image 1 shows a railway yard, draw rail tracks on grey ballast; blue water only where the river or a pond really is. Keep exactly the same layout, camera angle, geometry, buildings, streets and "
     "composition as image 1. No text, no labels, no border."
 )
 REF_PROMPT = " Match the pixel art style, palette and level of detail of image 2 exactly."

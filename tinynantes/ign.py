@@ -141,3 +141,20 @@ def mosaic(kind: str, bbox):
         rows.append(np.concatenate([chunk(kind, cx, cy) for cx in range(cx0, cx1 + 1)], axis=1))
     a = np.concatenate(rows, axis=0)
     return a, (cx0 * CHUNK, (cy1 + 1) * CHUNK), res
+
+
+def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "ortho"), workers=8):
+    """Download every chunk the bboxes need, in parallel."""
+    from concurrent.futures import ThreadPoolExecutor
+    keys = set()
+    for b in bboxes:
+        for cx in range(math.floor(b[0] / CHUNK), math.floor((b[2] - 1e-6) / CHUNK) + 1):
+            for cy in range(math.floor(b[1] / CHUNK), math.floor((b[3] - 1e-6) / CHUNK) + 1):
+                keys.update((k, cx, cy) for k in kinds)
+    keys = sorted(keys)
+    done = 0
+    with ThreadPoolExecutor(workers) as ex:
+        for _ in ex.map(lambda k: chunk(*k) is not None, keys):
+            done += 1
+            if done % 25 == 0 or done == len(keys):
+                print(f"ign {done}/{len(keys)}", flush=True)

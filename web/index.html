@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tiny Nantes</title>
+<meta name="description" content="Nantes redessinée en pixel art isométrique. Explorez le centre-ville et l'île de Nantes.">
+<meta property="og:title" content="Tiny Nantes">
+<meta property="og:description" content="Nantes en pixel art isométrique.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="map" aria-label="Carte isométrique de Nantes. Glisser pour se déplacer, molette ou pincer pour zoomer."></canvas>
+<div id="tilt" aria-hidden="true"><div class="band top"></div><div class="band bottom"></div></div>
+<canvas id="labels" aria-hidden="true"></canvas>
+
+<header class="logo">
+  <span class="tiny">TINY</span>
+  <span class="name">Nantes</span>
+</header>
+
+<form id="search" class="search" role="search" autocomplete="off">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+  <input id="q" type="search" placeholder="Chercher un lieu, une rue, une adresse" aria-label="Chercher">
+  <ul id="results" hidden></ul>
+</form>
+
+<nav class="rail" aria-label="Contrôles">
+  <button id="zin" title="Zoomer (+)">+</button>
+  <button id="zout" title="Dézoomer (−)">−</button>
+  <button id="home" title="Toute la carte (0)">⌂</button>
+  <hr>
+  <button id="tiltBtn" title="Effet tilt-shift (D)" aria-pressed="true">◎</button>
+  <button id="labelsBtn" title="Lieux (L)" aria-pressed="true">⚑</button>
+  <button id="share" title="Partager cette vue">⇪</button>
+  <button id="info" title="À propos">i</button>
+</nav>
+
+<div id="mini" class="mini" title="Minimap : cliquer ou glisser pour se déplacer"><canvas></canvas></div>
+
+<aside id="about" class="panel" hidden>
+  <button class="close" aria-label="Fermer">×</button>
+  <h2>Tiny Nantes</h2>
+  <p>Nantes en pixel art isométrique. Glisser pour se déplacer, molette ou pincer pour zoomer.</p>
+  <p>Relief et bâti : LiDAR HD, BD TOPO et BD ORTHO de l'IGN (Licence Ouverte), mis en volume puis redessinés tuile par tuile par un modèle d'image (FLUX.2 klein).</p>
+  <p>Inspiré par <a href="https://tinylasvegas.com" target="_blank" rel="noopener">tinylasvegas.com</a> et <a href="https://tinyrj.com" target="_blank" rel="noopener">tinyrj.com</a>.</p>
+  <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN</p>
+</aside>
+<div id="toast" class="toast" hidden></div>
+<div class="credit-badge">© IGN</div>
+<script src="app.js" type="module"></script>
+</body>
+</html>

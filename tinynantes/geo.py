@@ -77,8 +77,14 @@ class View:
         i0, i1 = math.floor(sx.min() / TILE_M), math.floor(sx.max() / TILE_M)
         j0, j1 = math.floor(sy.min() / TILE_M), math.floor(sy.max() / TILE_M)
         out = []
+        r, d, _ = self.axes
+        inv = np.linalg.inv(np.array([[r[0], r[1]], [d[0], d[1]]]))
+        m = TILE_M * 0.5   # keep tiles whose centre (on the ground) is within half a tile of the area
         for j in range(j0, j1 + 1):
             for i in range(i0, i1 + 1):
-                # keep tiles whose centre ground point is inside the area (with a margin)
-                out.append((i, j))
+                cx, cy = (i + 0.5) * TILE_M, (j + 0.5) * TILE_M
+                gx, gy = inv @ np.array([cx - r[2] * z, cy - d[2] * z])
+                gx += ORIGIN[0]; gy += ORIGIN[1]
+                if x0 - m <= gx <= x1 + m and y0 - m <= gy <= y1 + m:
+                    out.append((i, j))
         return out

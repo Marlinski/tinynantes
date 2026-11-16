@@ -33,7 +33,7 @@ void main() {
     vec3 p = vec3(in_xy, in_zgb.x);
     float sx = dot(p, u_r), sy = dot(p, u_d), dp = dot(p, u_b);
     gl_Position = vec4((sx - u_view.x) / u_view.z, -(sy - u_view.y) / u_view.z,
-                       -(dp - u_view.w) / 400.0, 1.0);
+                       -(dp - u_view.w) / 1500.0, 1.0);
     v_pos = p; v_ground = in_zgb.y; v_bati = in_zgb.z;
 }
 """
@@ -102,9 +102,11 @@ def _clean(mns, mnt):
     return mns.astype("f4"), mnt.astype("f4")
 
 
-def render_tile(i: int, j: int, view=geo.View(0)) -> Image.Image:
+def render_tile(i: int, j: int, view=geo.View(0), margin_px: int = 0) -> Image.Image:
+    """Render tile (i, j) plus margin_px pixels of context on every side."""
     T = geo.TILE_M
-    pad = 4.0
+    mm = margin_px * geo.M_PER_PX
+    pad = 4.0 + mm
     bbox = view.ground_bbox(i * T - pad, j * T - pad, (i + 1) * T + pad, (j + 1) * T + pad)
     mns, (gx0, gy1), res = ign.mosaic("mns", bbox)
     mnt, _, _ = ign.mosaic("mnt", bbox)
@@ -132,7 +134,9 @@ def render_tile(i: int, j: int, view=geo.View(0)) -> Image.Image:
     r, dn, bk = view.axes
     prog["u_r"].value = tuple(r); prog["u_d"].value = tuple(dn); prog["u_b"].value = tuple(bk)
     cx, cy = (i + 0.5) * T, (j + 0.5) * T
-    prog["u_view"].value = (cx, cy, T / 2, 0.0)
+    inv = np.linalg.inv(np.array([[r[0], r[1]], [dn[0], dn[1]]]))
+    gx, gy = inv @ np.array([cx - r[2] * 10.0, cy - dn[2] * 10.0])   # ground point at the tile centre
+    prog["u_view"].value = (cx, cy, T / 2 + mm, float(gx * bk[0] + gy * bk[1] + 10.0 * bk[2]))
     oh, ow = ortho.shape[:2]
     prog["u_obox"].value = (gx0 - ox, gy1 - oy, ow * ores, oh * ores)
     sun = np.array([-0.45, -0.75, 0.8]); sun /= np.linalg.norm(sun)
@@ -143,14 +147,15 @@ def render_tile(i: int, j: int, view=geo.View(0)) -> Image.Image:
     tex.use(0); prog["u_ortho"].value = 0
     vbo = ctx.buffer(verts.tobytes()); ibo = ctx.buffer(tris.tobytes())
     vao = ctx.vertex_array(prog, [(vbo, "2f 3f", "in_xy", "in_zgb")], ibo)
-    n = geo.TILE_PX * SS
+    size = geo.TILE_PX + 2 * margin_px
+    n = size * SS
     fbo = ctx.simple_framebuffer((n, n), components=3)
     fbo.use(); ctx.enable(moderngl.DEPTH_TEST); fbo.clear(0.55, 0.62, 0.66, 1.0)
     vao.render(moderngl.TRIANGLES)
     img = Image.frombytes("RGB", (n, n), fbo.read(components=3)).transpose(Image.FLIP_TOP_BOTTOM)
     for o in (vao, vbo, ibo, tex, fbo):
         o.release()
-    return img.resize((geo.TILE_PX, geo.TILE_PX), Image.LANCZOS)
+    return img.resize((size, size), Image.LANCZOS)
 
 
 def main(argv):
