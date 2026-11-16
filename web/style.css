@@ -69,3 +69,8 @@ canvas#labels { position: fixed; inset: 0; width: 100%; height: 100%; pointer-ev
   .rail { top: auto; bottom: 16px; transform: none; }
   .panel { right: 16px; left: 16px; width: auto; }
 }
+
+#compass { transition: transform .35s ease; display: block; margin: auto; }
+#compassBtn { cursor: default; }
+canvas#map.turned { animation: turned .35s ease; }
+@keyframes turned { from { opacity: .35; } to { opacity: 1; } }

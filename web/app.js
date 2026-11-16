@@ -1,11 +1,14 @@
-// Tiny Nantes viewer: pans and zooms the isometric tile pyramid in data/h0/.
+// Tiny Nantes viewer: pans, zooms and turns the isometric tile pyramids in data/hH/ (one per heading).
 // World units are "screen metres" (see tinynantes/geo.py): tile (i, j) at level L covers
 // x in [i, i+1) * tile_m * 2^L and y (downwards) likewise.
 
 const $ = (id) => document.getElementById(id);
 const cv = $("map"), ctx = cv.getContext("2d");
 const lab = $("labels"), lctx = lab.getContext("2d");
-const DATA = "data/h0/";
+let H = 0;                              // current heading (0..7, 45 deg steps)
+const dir = () => `data/h${H}/`;
+const mans = {};                        // heading -> manifest
+let heads = [0];
 
 let man, places = [], dpr = 1;
 const view = { x: 0, y: 0, s: 1 };     // centre (metres) and scale (CSS px per metre)
@@ -16,29 +19,36 @@ const cache = new Map();                // "L/i_j" -> { img, ready }
 let dirty = true;
 
 // ---------------------------------------------------------------- loading
+async function loadManifest(h) {
+  const m = await (await fetch(`data/h${h}/manifest.json`)).json();
+  const [i0, j0, i1, j1] = m.bounds, T = m.tile_m;
+  m.box = [i0 * T, j0 * T, (i1 + 1) * T, (j1 + 1) * T];
+  m.sets = [new Set(m.tiles)];
+  for (let L = 1; L < m.levels; L++) m.sets[L] = new Set(m.level_tiles[L] || []);
+  mans[h] = m;
+}
 async function init() {
-  man = await (await fetch(DATA + "manifest.json")).json();
+  try { heads = await (await fetch("data/headings.json")).json(); } catch { heads = [0]; }
+  await Promise.all(heads.map(loadManifest));
   try { places = await (await fetch("data/places.json")).json(); } catch { places = []; }
-  const [i0, j0, i1, j1] = man.bounds, T = man.tile_m;
-  man.box = [i0 * T, j0 * T, (i1 + 1) * T, (j1 + 1) * T];
-  man.sets = [new Set(man.tiles)];
-  for (let L = 1; L < man.levels; L++) man.sets[L] = new Set(man.level_tiles[L] || []);
-  maxS = 4 / (T / man.tile_px);                         // up to 4 screen px per art px
+  H = heads[0]; man = mans[H];
+  maxS = 4 / (man.tile_m / man.tile_px);                // up to 4 screen px per art px
   resize();
   if (!readHash()) home();
   initMini();
+  $("turnL").hidden = $("turnR").hidden = heads.length < 2;
   requestAnimationFrame(frame);
 }
 
 function tile(L, i, j) {
-  const k = `${L}/${i}_${j}`;
+  const k = `${H}/${L}/${i}_${j}`;
   let t = cache.get(k);
   if (!t) {
     t = { img: new Image(), ready: false, used: 0 };
     t.img.decoding = "async";
     t.img.onload = () => { t.ready = true; dirty = true; };
     t.img.onerror = () => { t.failed = true; };
-    t.img.src = `${DATA}${L}/${i}_${j}.webp`;
+    t.img.src = `${dir()}${L}/${i}_${j}.webp`;
     cache.set(k, t);
     if (cache.size > 400) evict();
   }
@@ -108,6 +118,7 @@ function drawLabels() {
   const pins = [];
   if (showLabels && view.s > minS * 2.2) for (const p of places) pins.push({ ...p, kind: "place" });
   if (marker) pins.push({ ...marker, kind: "marker" });
+  for (const p of pins) [p.sx, p.sy] = l93ToScreen(p.x, p.y);
   lctx.font = "600 12px Geist, system-ui, sans-serif";
   lctx.textBaseline = "middle";
   for (const p of pins) {
@@ -232,19 +243,51 @@ addEventListener("keydown", (e) => {
   else if (k === "/") { e.preventDefault(); $("q").focus(); }
   else if (k === "d" || k === "D") toggleTilt();
   else if (k === "l" || k === "L") toggleLabels();
+  else if (k === "q" || k === "Q" || k === ",") turn(1);
+  else if (k === "e" || k === "E" || k === ".") turn(-1);
   else return;
   clamp();
 });
 
 // ---------------------------------------------------------------- hash (#x,y,zoom)
 function writeHash() {
-  history.replaceState(null, "", `#${view.x.toFixed(0)},${view.y.toFixed(0)},${view.s.toFixed(3)}`);
+  history.replaceState(null, "", `#${view.x.toFixed(0)},${view.y.toFixed(0)},${view.s.toFixed(3)},h${H}`);
 }
 function readHash() {
-  const m = location.hash.slice(1).split(",").map(Number);
+  const parts = location.hash.slice(1).split(",");
+  const m = parts.slice(0, 3).map(Number);
   if (m.length < 3 || m.some(isNaN)) return false;
+  const h = parts[3] && parts[3][0] === "h" ? Number(parts[3].slice(1)) : H;
+  if (mans[h]) setHeading(h);
   [view.x, view.y, view.s] = m; clamp(); dirty = true; return true;
 }
+
+// ---------------------------------------------------------------- turning (Q / E)
+function screenToL93(sx, sy, z = 10) {
+  const [r, d] = man.axes;
+  const a = r[0], b = r[1], c = d[0], e = d[1], det = a * e - b * c;
+  const u = sx - z * r[2], v = sy - z * d[2];
+  return [(e * u - b * v) / det + man.origin_l93[0], (a * v - c * u) / det + man.origin_l93[1]];
+}
+function setHeading(h) {
+  H = h; man = mans[h];
+  mini.img.src = dir() + "overview.webp";
+  const [r, d] = man.axes;                               // where world north points on screen
+  $("compass").style.transform = `rotate(${(Math.atan2(r[1], -d[1]) * 180 / Math.PI).toFixed(1)}deg)`;
+}
+function turn(step) {
+  if (heads.length < 2) return;
+  const [x, y] = screenToL93(view.x, view.y);
+  let k = heads.indexOf(H);
+  k = (k + step + heads.length) % heads.length;
+  anim = null; vel = null;
+  setHeading(heads[k]);
+  [view.x, view.y] = l93ToScreen(x, y);
+  clamp(); dirty = true; writeHash();
+  cv.classList.remove("turned"); void cv.offsetWidth; cv.classList.add("turned");
+}
+$("turnL").onclick = () => turn(1);
+$("turnR").onclick = () => turn(-1);
 
 // ---------------------------------------------------------------- buttons
 $("zin").onclick = () => { zoomAt(1.6); writeHash(); };
@@ -277,7 +320,7 @@ function initMini() {
     mini.cv.width = w * dpr; mini.cv.height = h * dpr; mini.cv.style.width = w + "px"; mini.cv.style.height = h + "px";
     mini.k = w / (man.box[2] - man.box[0]); dirty = true;
   };
-  mini.img.src = DATA + "overview.webp";
+  mini.img.src = dir() + "overview.webp";
   const jump = (e) => {
     const r = mini.cv.getBoundingClientRect();
     view.x = man.box[0] + (e.clientX - r.left) / mini.k; view.y = man.box[1] + (e.clientY - r.top) / mini.k;
@@ -309,16 +352,14 @@ q.addEventListener("input", async () => {
   const text = q.value.trim(), my = ++seq;
   if (text.length < 2) { results.hidden = true; return; }
   const local = places.filter((p) => norm(p.name).includes(norm(text))).slice(0, 4)
-    .map((p) => ({ name: p.name, sub: "Lieu", sx: p.sx, sy: p.sy }));
+    .map((p) => ({ name: p.name, sub: "Lieu", x: p.x, y: p.y }));
   render(local);
   try {
     const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(text)}&lat=47.2135&lon=-1.5555&limit=6`);
     const js = await r.json();
     if (my !== seq) return;
-    const addr = js.features.map((f) => {
-      const [sx, sy] = l93ToScreen(f.properties.x, f.properties.y);
-      return { name: f.properties.name, sub: f.properties.city, sx, sy };
-    }).filter((a) => inMap(a.sx, a.sy));
+    const addr = js.features.map((f) => ({ name: f.properties.name, sub: f.properties.city, x: f.properties.x, y: f.properties.y }))
+      .filter((a) => inMap(...l93ToScreen(a.x, a.y)));
     render([...local, ...addr].slice(0, 7));
   } catch { /* offline: places only */ }
 });
@@ -340,8 +381,9 @@ function render(list) {
   results.hidden = false;
 }
 function go(it) {
-  marker = { sx: it.sx, sy: it.sy, name: it.name };
-  flyTo(it.sx, it.sy, Math.max(view.s, 1.2));
+  marker = { x: it.x, y: it.y, name: it.name };
+  const [sx, sy] = l93ToScreen(it.x, it.y);
+  flyTo(sx, sy, Math.max(view.s, 1.2));
   results.hidden = true; q.blur();
 }
 q.addEventListener("keydown", (e) => {

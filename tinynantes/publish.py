@@ -1,7 +1,7 @@
-"""Turn out/h0/art/*.png into the web tile pyramid under web/data/h0/.
+"""Turn out/hH/art/*.png into the web tile pyramids under web/data/hH/ (every heading that has art).
 
 Level 0 is the full-resolution 1024 px tiles; level L merges 2^L x 2^L tiles into one 1024 px image.
-Also writes manifest.json (tile list, grid, projection) and places.json (landmarks in screen metres).
+Also writes hH/manifest.json (tile lists, projection axes), headings.json and places.json (Lambert-93).
 
 Usage: uv run python -m tinynantes.publish
 """
@@ -16,8 +16,7 @@ from PIL import Image
 from . import geo
 
 ROOT = Path(__file__).resolve().parent.parent
-ART = ROOT / "out" / "h0" / "art"
-WEB = ROOT / "web" / "data" / "h0"
+DATA = ROOT / "web" / "data"
 N = geo.TILE_PX
 
 # name, lon, lat (checked against OpenStreetMap / Nominatim, 2026-11)
@@ -53,23 +52,32 @@ PLACES = [
 def places():
     from pyproj import Transformer
     t = Transformer.from_crs(4326, 2154, always_xy=True)
-    v = geo.View(0)
     out = []
     for name, lon, lat in PLACES:
         x, y = t.transform(lon, lat)
-        sx, sy, _ = v.to_screen(x - geo.ORIGIN[0], y - geo.ORIGIN[1], 10.0)
-        out.append({"name": name, "sx": round(sx, 1), "sy": round(sy, 1)})
+        out.append({"name": name, "x": round(x, 1), "y": round(y, 1)})
     return out
 
 
 def main():
+    heads = []
+    for h in range(8):
+        art = ROOT / "out" / f"h{h}" / "art"
+        if art.exists() and any(art.glob("*.png")):
+            publish_heading(h, art, DATA / f"h{h}")
+            heads.append(h)
+    (DATA / "headings.json").write_text(json.dumps(heads))
+    (DATA / "places.json").write_text(json.dumps(places(), ensure_ascii=False))
+
+
+def publish_heading(h, ART, WEB):
     tiles = {}
     for f in ART.glob("*.png"):
         parts = f.stem.split("_")          # "I_J" only; skip experiment files like "I_J_9b"
         if len(parts) == 2:
             tiles[(int(parts[0]), int(parts[1]))] = f
     if not tiles:
-        raise SystemExit("no art tiles")
+        return
     is_ = [k[0] for k in tiles]; js = [k[1] for k in tiles]
     i0, i1, j0, j1 = min(is_), max(is_), min(js), max(js)
     span = max(i1 - i0 + 1, j1 - j0 + 1)
@@ -82,7 +90,9 @@ def main():
     for (i, j), f in tiles.items():
         im = Image.open(f).convert("RGB")
         cur[(i, j)] = im
-        im.save(d / f"{i}_{j}.webp", quality=88, method=6)
+        w = d / f"{i}_{j}.webp"
+        if not w.exists() or w.stat().st_mtime < f.stat().st_mtime:
+            im.save(w, quality=88, method=6)
     for L in range(1, levels):
         nxt = {}
         d = WEB / str(L); d.mkdir(exist_ok=True)
@@ -110,13 +120,12 @@ def main():
     ov.save(WEB / "overview.webp", quality=85)
 
     manifest = {
-        "heading": 0, "tile_px": N, "tile_m": geo.TILE_M, "levels": levels,
+        "heading": h, "tile_px": N, "tile_m": geo.TILE_M, "levels": levels,
         "bounds": [i0, j0, i1, j1], "tiles": sorted(f"{i}_{j}" for i, j in tiles), "level_tiles": per_level,
-        "origin_l93": geo.ORIGIN, "axes": [list(a) for a in geo.View(0).axes],
+        "origin_l93": geo.ORIGIN, "axes": [list(a) for a in geo.View(h).axes],
     }
     (WEB / "manifest.json").write_text(json.dumps(manifest))
-    (WEB.parent / "places.json").write_text(json.dumps(places(), ensure_ascii=False))
-    print(f"published {len(tiles)} tiles, {levels} levels")
+    print(f"h{h}: published {len(tiles)} tiles, {levels} levels", flush=True)
 
 
 if __name__ == "__main__":
