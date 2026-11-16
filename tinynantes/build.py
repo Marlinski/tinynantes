@@ -46,6 +46,13 @@ def rendered(i, j):
     return Image.open(f).convert("RGB")
 
 
+def _render_job(args):
+    """Runs in the render child process."""
+    global HEADING
+    HEADING, i, j = args
+    rendered(i, j)
+
+
 def has_rails(i, j):
     return (hdir() / "render_m" / f"{i}_{j}.rails").exists()
 
@@ -157,10 +164,14 @@ def build(tiles):
     from . import ign
     boxes = [geo.View(HEADING).ground_bbox(i * geo.TILE_M - 50, j * geo.TILE_M - 50, (i + 1) * geo.TILE_M + 50, (j + 1) * geo.TILE_M + 50) for i, j in tiles]
     ign.prefetch(boxes)
-    # pre-render sequentially (single GL context)
-    for k, (i, j) in enumerate(tiles):
-        rendered(i, j)
-        print(f"render {k + 1}/{len(tiles)}", flush=True)
+    # pre-render in a child process recycled every 20 tiles: the Intel EGL driver keeps ~60 MB of
+    # GPU buffers per render until the process exits (this OOM-killed the desktop session once)
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    todo = [t for t in tiles if not (hdir() / "render_m" / f"{t[0]}_{t[1]}.png").exists()]
+    with ProcessPoolExecutor(1, mp_context=mp.get_context("spawn"), max_tasks_per_child=20) as ex:
+        for k, _ in enumerate(ex.map(_render_job, [(HEADING, i, j) for i, j in todo])):
+            print(f"render {k + 1}/{len(todo)}", flush=True)
     waves = {}
     for i, j in tiles:
         waves.setdefault(i + j, []).append((i, j))
