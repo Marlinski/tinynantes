@@ -100,22 +100,25 @@ def chunk(kind: str, cx: int, cy: int):
                 code[(rgb == c).all(-1)] = v
             Image.fromarray(code).save(f)
         return np.asarray(Image.open(f))
-    if kind == "bati":
+    if kind in WFS_LAYERS:
         f = d / f"{cx}_{cy}.png"
         if not f.exists():
-            _buildings_mask(bbox).save(f)
+            _polygon_mask(bbox, WFS_LAYERS[kind]).save(f)
         return np.asarray(Image.open(f)) > 0
     raise ValueError(kind)
 
 
-def _buildings_mask(bbox):
+WFS_LAYERS = {"bati": "BDTOPO_V3:batiment", "eau": "BDTOPO_V3:surface_hydrographique"}
+
+
+def _polygon_mask(bbox, typename):
     x0, y0, x1, y1 = bbox
     n = int(CHUNK / DEM_RES)
     feats, start = [], 0
     while True:
         raw = _get(WFS, {
             "SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
-            "TYPENAMES": "BDTOPO_V3:batiment", "SRSNAME": "EPSG:2154",
+            "TYPENAMES": typename, "SRSNAME": "EPSG:2154",
             "BBOX": f"{x0},{y0},{x1},{y1},EPSG:2154", "OUTPUTFORMAT": "application/json",
             "COUNT": 5000, "STARTINDEX": start,
         })
@@ -152,7 +155,7 @@ def mosaic(kind: str, bbox):
     return a, (cx0 * CHUNK, (cy1 + 1) * CHUNK), res
 
 
-def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "ortho"), workers=4):
+def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "eau", "ortho"), workers=4):
     """Download every chunk the bboxes need, in parallel."""
     from concurrent.futures import ThreadPoolExecutor
     keys = set()

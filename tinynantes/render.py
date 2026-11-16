@@ -28,7 +28,7 @@ uniform vec3 u_r, u_d, u_b;
 uniform vec4 u_view;    // sx centre, sy centre, half size, depth centre
 out vec3 v_pos;
 out float v_ground;
-out float v_bati;
+flat out float v_bati;
 void main() {
     vec3 p = vec3(in_xy, in_zgb.x);
     float sx = dot(p, u_r), sy = dot(p, u_d), dp = dot(p, u_b);
@@ -42,7 +42,7 @@ FS = """
 #version 330
 in vec3 v_pos;
 in float v_ground;
-in float v_bati;   // 0 ground/other, 1 building, 2 vegetation
+flat in float v_bati;   // 0 ground/other, 1 building, 2 vegetation, 3 water
 uniform sampler2D u_ortho;
 uniform vec4 u_obox;    // ortho x0, y1 (top-left, relative to origin), width m, height m
 uniform vec3 u_sun;
@@ -75,6 +75,10 @@ void main() {
         vec3 blur = textureLod(u_ortho, uv, 5.0).rgb;
         if (v_bati > 1.5) col = blur * vec3(0.75, 0.85, 0.75) * (0.55 + 0.4 * lam);  // canopy sides
         else       col = vec3(0.80, 0.77, 0.70) * (0.55 + 0.55 * lam);        // ramparts, quays, stone
+    } else if (v_bati > 2.5) {
+        // water: a clear river blue keeps the redraw from reading the brown Loire as ground or ballast
+        float l = dot(ortho, vec3(0.3, 0.5, 0.2));
+        col = vec3(0.22, 0.46, 0.62) * (0.85 + 0.4 * l);
     } else {
         col = ortho * (0.92 + 0.15 * lam);
     }
@@ -116,9 +120,13 @@ def render_tile(i: int, j: int, view=geo.View(0), margin_px: int = 0) -> Image.I
     lc, _, _ = ign.mosaic("cls", bbox)
     bati = ndimage.binary_dilation(bati | (lc == 6), iterations=2)  # cover the wall ramps around footprints
     veg = ndimage.binary_dilation(lc == 5, iterations=2) & ~bati
-    water = lc == 9
+    eau, _, _ = ign.mosaic("eau", bbox)
+    water = (eau | (lc == 9)) & ~bati
+    # bridges, boats and pontoons stand above the water: keep them, flatten the rest (waves, noise)
+    above = lc == 17   # LiDAR bridge deck (MNT under water lies below the surface, so heights mislead)
+    water &= ~ndimage.binary_dilation(above, iterations=1)
     mns = np.where(water, mnt, mns)
-    cls = np.where(bati, 1.0, np.where(veg, 2.0, 0.0)).astype("f4")
+    cls = np.where(bati, 1.0, np.where(veg, 2.0, np.where(water, 3.0, 0.0))).astype("f4")
 
     ox, oy = geo.ORIGIN
     h, w = mns.shape
