@@ -44,10 +44,19 @@ _session.headers["User-Agent"] = "tinynantes-map/0.1"
 def _get(url, params, tries=5):
     for k in range(tries):
         try:
-            r = _session.get(url, params=params, timeout=120)
-            if r.status_code == 200 and not r.headers.get("content-type", "").startswith(("text/xml", "application/vnd.ogc.se")):
-                return r.content
-            err = f"{r.status_code} {r.text[:200]}"
+            # hard deadline for the whole body: a throttled server can trickle bytes forever
+            t0 = time.monotonic()
+            with requests.get(url, params=params, timeout=(15, 30), stream=True,
+                              headers=_session.headers) as r:
+                body = bytearray()
+                for part in r.iter_content(65536):
+                    body += part
+                    if time.monotonic() - t0 > 90:
+                        raise requests.Timeout("body took > 90 s")
+                ct = r.headers.get("content-type", "")
+                if r.status_code == 200 and not ct.startswith(("text/xml", "application/vnd.ogc.se")):
+                    return bytes(body)
+                err = f"{r.status_code} {bytes(body[:200])!r}"
         except requests.RequestException as e:
             err = str(e)
         time.sleep(2 * (k + 1))
@@ -143,7 +152,7 @@ def mosaic(kind: str, bbox):
     return a, (cx0 * CHUNK, (cy1 + 1) * CHUNK), res
 
 
-def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "ortho"), workers=8):
+def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "ortho"), workers=4):
     """Download every chunk the bboxes need, in parallel."""
     from concurrent.futures import ThreadPoolExecutor
     keys = set()
@@ -153,8 +162,9 @@ def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "ortho"), workers=8):
                 keys.update((k, cx, cy) for k in kinds)
     keys = sorted(keys)
     done = 0
+    from concurrent.futures import as_completed
     with ThreadPoolExecutor(workers) as ex:
-        for _ in ex.map(lambda k: chunk(*k) is not None, keys):
+        for _ in as_completed([ex.submit(chunk, *k) for k in keys]):
             done += 1
             if done % 25 == 0 or done == len(keys):
                 print(f"ign {done}/{len(keys)}", flush=True)

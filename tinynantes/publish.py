@@ -77,6 +77,7 @@ def main():
     WEB.mkdir(parents=True, exist_ok=True)
 
     cur = {}
+    per_level = {}
     d = WEB / "0"; d.mkdir(exist_ok=True)
     for (i, j), f in tiles.items():
         im = Image.open(f).convert("RGB")
@@ -96,6 +97,7 @@ def main():
             im = canvas.resize((N, N), Image.LANCZOS)
             nxt[(I, J)] = im
             im.save(d / f"{I}_{J}.webp", quality=85, method=6)
+        per_level[L] = sorted(f"{I}_{J}" for I, J in nxt)
         cur = nxt
 
     # overview for the minimap
@@ -109,7 +111,7 @@ def main():
 
     manifest = {
         "heading": 0, "tile_px": N, "tile_m": geo.TILE_M, "levels": levels,
-        "bounds": [i0, j0, i1, j1], "tiles": sorted(f"{i}_{j}" for i, j in tiles),
+        "bounds": [i0, j0, i1, j1], "tiles": sorted(f"{i}_{j}" for i, j in tiles), "level_tiles": per_level,
         "origin_l93": geo.ORIGIN, "axes": [list(a) for a in geo.View(0).axes],
     }
     (WEB / "manifest.json").write_text(json.dumps(manifest))

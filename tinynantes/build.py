@@ -77,9 +77,6 @@ def match_seams(out, src, mask, reach=300, sigma=20):
     return Image.fromarray(np.clip(o, 0, 255).astype("u1"))
 
 
-_lock = __import__("threading").Lock()
-
-
 def feather_into_neighbours(i, j, out):
     """Dissolve this tile's left/top margins into the finished neighbours' edges, so content changes
     gradually over M pixels instead of switching at the tile boundary."""
@@ -90,29 +87,44 @@ def feather_into_neighbours(i, j, out):
         f = art_path(i + di, j + dj)
         if not f.exists():
             continue
-        with _lock:
-            nb = np.asarray(Image.open(f).convert("RGB"), "f4").copy()
-            if di == -1:   # strip: our x in [0, M), y in core -> their x in [N-M, N)
-                strip, a = o[M:M + N, 0:M], ramp[None, :, None]
-                nb[:, N - M:] = nb[:, N - M:] * (1 - a) + strip * a
-            else:          # our y in [0, M), x in core -> their y in [N-M, N)
-                strip, a = o[0:M, M:M + N], ramp[:, None, None]
-                nb[N - M:, :] = nb[N - M:, :] * (1 - a) + strip * a
-            Image.fromarray(np.clip(nb, 0, 255).astype("u1")).save(f)
+        nb = np.asarray(Image.open(f).convert("RGB"), "f4").copy()
+        if di == -1:   # strip: our x in [0, M), y in core -> their x in [N-M, N)
+            strip, a = o[M:M + N, 0:M], ramp[None, :, None]
+            nb[:, N - M:] = nb[:, N - M:] * (1 - a) + strip * a
+        else:          # our y in [0, M), x in core -> their y in [N-M, N)
+            strip, a = o[0:M, M:M + N], ramp[:, None, None]
+            nb[N - M:, :] = nb[N - M:, :] * (1 - a) + strip * a
+        _save(Image.fromarray(np.clip(nb, 0, 255).astype("u1")), f)
 
 
-def build_tile(i, j):
-    if art_path(i, j).exists():
+def _save(img, f):
+    tmp = f.with_suffix(".tmp.png")
+    img.save(tmp)
+    tmp.replace(f)   # atomic: readers never see a half-written file
+
+
+def build_wave(wave, workers=6):
+    """Tiles on one anti-diagonal: compose all inputs first, draw them in parallel, then save
+    and feather one by one, so no file is read while another thread writes it."""
+    todo = [t for t in wave if not art_path(*t).exists()]
+    if not todo:
         return
-    src, mask, n = compose(i, j)
-    out = stylize(src, prompt=PROMPT + (SEAM_PROMPT if n else ""), seed=7)
-    out = match_seams(out, src, mask)
-    art_path(i, j).parent.mkdir(parents=True, exist_ok=True)
-    (H0 / "art_m").mkdir(exist_ok=True)
-    out.save(H0 / "art_m" / f"{i}_{j}.png")
-    out.crop((M, M, M + N, M + N)).save(art_path(i, j))
-    feather_into_neighbours(i, j, out)
-    print("art", i, j, f"({n} neighbours)", flush=True)
+    inputs = {t: compose(*t) for t in todo}
+
+    def draw(t):
+        src, mask, n = inputs[t]
+        out = stylize(src, prompt=PROMPT + (SEAM_PROMPT if n else ""), seed=7)
+        return match_seams(out, src, mask)
+
+    with ThreadPoolExecutor(workers) as ex:
+        outs = dict(zip(todo, ex.map(draw, todo)))
+    (H0 / "art_m").mkdir(parents=True, exist_ok=True)
+    art_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
+    for (i, j), out in outs.items():
+        _save(out, H0 / "art_m" / f"{i}_{j}.png")
+        _save(out.crop((M, M, M + N, M + N)), art_path(i, j))
+        feather_into_neighbours(i, j, out)
+        print("art", i, j, f"({inputs[(i, j)][2]} neighbours)", flush=True)
 
 
 def build(tiles):
@@ -130,9 +142,8 @@ def build(tiles):
     waves = {}
     for i, j in tiles:
         waves.setdefault(i + j, []).append((i, j))
-    with ThreadPoolExecutor(6) as ex:
-        for d in sorted(waves):
-            list(ex.map(lambda t: build_tile(*t), waves[d]))
+    for d in sorted(waves):
+        build_wave(waves[d])
 
 
 def main(argv):

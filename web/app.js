@@ -21,7 +21,8 @@ async function init() {
   try { places = await (await fetch("data/places.json")).json(); } catch { places = []; }
   const [i0, j0, i1, j1] = man.bounds, T = man.tile_m;
   man.box = [i0 * T, j0 * T, (i1 + 1) * T, (j1 + 1) * T];
-  man.set = new Set(man.tiles);
+  man.sets = [new Set(man.tiles)];
+  for (let L = 1; L < man.levels; L++) man.sets[L] = new Set(man.level_tiles[L] || []);
   maxS = 4 / (T / man.tile_px);                         // up to 4 screen px per art px
   resize();
   if (!readHash()) home();
@@ -48,11 +49,7 @@ function evict() {
   const arr = [...cache.entries()].sort((a, b) => a[1].used - b[1].used);
   for (const [k] of arr.slice(0, 100)) cache.delete(k);
 }
-function exists(L, i, j) {
-  if (L === 0) return man.set.has(`${i}_${j}`);
-  const [i0, j0, i1, j1] = man.bounds, f = 2 ** L;
-  return i >= Math.floor(i0 / f) && i <= Math.floor(i1 / f) && j >= Math.floor(j0 / f) && j <= Math.floor(j1 / f);
-}
+function exists(L, i, j) { return man.sets[L].has(`${i}_${j}`); }
 
 // ---------------------------------------------------------------- drawing
 function resize() {
@@ -355,3 +352,4 @@ $("search").addEventListener("submit", (e) => { e.preventDefault(); if (items[se
 q.addEventListener("blur", () => setTimeout(() => (results.hidden = true), 150));
 
 init().catch((e) => { console.error(e); toast("Impossible de charger la carte"); });
+addEventListener("hashchange", () => { if (man) { anim = null; vel = null; readHash(); } });

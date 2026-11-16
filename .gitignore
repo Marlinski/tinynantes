@@ -11,3 +11,4 @@ research/
 __pycache__/
 *.pyc
 out/
+web/data/
