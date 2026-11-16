@@ -18,11 +18,18 @@ ROOT = Path(__file__).resolve().parent.parent
 PROMPT = (
     "Redraw image 1 as a detailed isometric pixel art illustration of a European city, like a polished "
     "16-bit city-builder game: crisp pixel edges, clean flat shading, limited warm palette, no photo noise. "
-    "Blue-grey slate roofs with dormers, cream limestone facades with neat rows of small windows, "
+    "Every roof keeps the colour it has in image 1: grey-blue slate roofs stay slate with dormers, orange and red "
+    "terracotta tile roofs stay terracotta, flat grey or white roofs stay grey or white, green roofs stay green. "
+    "Cream limestone facades with neat rows of small windows, "
     "round fluffy pixel trees, clean grey asphalt streets with white lane markings, tiny pixel cars and people, "
-    "green lawns. The flat blue areas of image 1 are the river Loire and its arms: draw them as calm blue water with soft ripples and keep their exact shape; draw water nowhere else. Do not invent railway tracks. Keep exactly the same layout, camera angle, geometry, buildings, streets and "
+    "green lawns. The flat blue areas of image 1 are the river Loire and its arms: draw them as calm blue water with soft ripples and keep their exact shape; draw water nowhere else: no invented pools, ponds or fountains; squares and courtyards stay paved or green. Keep exactly the same layout, camera angle, geometry, buildings, streets and "
     "composition as image 1. No text, no labels, no border."
 )
+RAILS_PROMPT = (
+    " The rail tracks drawn in image 1 are the Nantes tramway lines and the railway: keep every one of them as "
+    "visible pixel rails on a grey track bed, exactly in place, never turned into a road lane; no rails elsewhere."
+)
+NO_RAILS_PROMPT = " There are no rail or tram tracks in this area: do not draw any."
 REF_PROMPT = " Match the pixel art style, palette and level of detail of image 2 exactly."
 
 

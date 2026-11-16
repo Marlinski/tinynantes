@@ -106,6 +106,40 @@ def _clean(mns, mnt):
     return mns.astype("f4"), mnt.astype("f4")
 
 
+def _offset(xy, d):
+    """Offset a polyline sideways by d metres (left of travel direction)."""
+    p = np.asarray(xy, "f8")
+    if len(p) < 2 or d == 0:
+        return p
+    t = np.gradient(p, axis=0)
+    t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-9)
+    return p + np.stack([-t[:, 1], t[:, 0]], 1) * d
+
+
+def draw_rails(ortho, gx0, gy1, res, lines):
+    """Paint tram and train tracks onto the orthophoto (absolute Lambert-93 frame), exaggerated a bit so
+    they survive the 0.29 m/px render and read as rails to the redraw model."""
+    from PIL import ImageDraw
+    im = Image.fromarray(ortho)
+    dr = ImageDraw.Draw(im)
+    px = lambda p: [((x - gx0) / res, (gy1 - y) / res) for x, y in p]
+    w = lambda m: max(1, round(m / res))
+    for ln in lines:
+        if ln["level"].startswith("-") or len(ln["xy"]) < 2:
+            continue                                    # tunnels
+        tram = ln["nature"] == "Tramway"
+        spacing = 3.6 if tram else 4.4
+        bed = (104, 104, 100) if tram else (118, 104, 88)
+        for k in range(int(ln["tracks"])):
+            c = _offset(ln["xy"], (k - (int(ln["tracks"]) - 1) / 2) * spacing)
+            dr.line(px(c), fill=bed, width=w(3.0), joint="curve")
+            for side in (-0.75, 0.75):
+                rail = px(_offset(c, side))
+                dr.line(rail, fill=(38, 38, 42), width=w(0.6))
+                dr.line(rail, fill=(212, 212, 218), width=w(0.3))
+    return np.asarray(im)
+
+
 def render_tile(i: int, j: int, view=geo.View(0), margin_px: int = 0) -> Image.Image:
     """Render tile (i, j) plus margin_px pixels of context on every side."""
     T = geo.TILE_M
@@ -117,6 +151,8 @@ def render_tile(i: int, j: int, view=geo.View(0), margin_px: int = 0) -> Image.I
     bati, _, _ = ign.mosaic("bati", bbox)
     ortho, _, ores = ign.mosaic("ortho", bbox)
     mns, mnt = _clean(mns, mnt)
+    lines = [ln for ln in ign.rails(bbox) if not ln["level"].startswith("-")]
+    ortho = draw_rails(ortho, gx0, gy1, ores, lines)
     lc, _, _ = ign.mosaic("cls", bbox)
     bati = ndimage.binary_dilation(bati | (lc == 6), iterations=2)  # cover the wall ramps around footprints
     veg = ndimage.binary_dilation(lc == 5, iterations=2) & ~bati
@@ -163,7 +199,16 @@ def render_tile(i: int, j: int, view=geo.View(0), margin_px: int = 0) -> Image.I
     img = Image.frombytes("RGB", (n, n), fbo.read(components=3)).transpose(Image.FLIP_TOP_BOTTOM)
     for o in (vao, vbo, ibo, tex, fbo):
         o.release()
-    return img.resize((size, size), Image.LANCZOS)
+    img = img.resize((size, size), Image.LANCZOS)
+    # does any track cross the rendered square? (lets the redraw prompt mention rails only when true)
+    img.info["rails"] = False
+    for ln in lines:
+        p = np.asarray(ln["xy"]) - np.array(geo.ORIGIN)
+        sx, sy, _ = view.to_screen(p[:, 0], p[:, 1], np.full(len(p), 10.0))
+        if ((np.abs(sx - cx) < T / 2 + mm) & (np.abs(sy - cy) < T / 2 + mm)).any():
+            img.info["rails"] = True
+            break
+    return img
 
 
 def main(argv):

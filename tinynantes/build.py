@@ -1,13 +1,15 @@
 """Build stylized tiles in raster order, feeding finished neighbours into each tile's margin
 so FLUX.2 Klein continues them and the tiles line up without seams.
 
-Usage: uv run python -m tinynantes.build I0 J0 I1 J1      (inclusive tile range)
-       uv run python -m tinynantes.build --area
-Writes out/h0/render_m/I_J.png (render with margin) and out/h0/art/I_J.png (1024 px core).
+Usage: uv run python -m tinynantes.build [--heading H] I0 J0 I1 J1      (inclusive tile range)
+       uv run python -m tinynantes.build [--heading H|all] --area
+Writes out/hH/render_m/I_J.png (render with margin) and out/hH/art/I_J.png (1024 px core).
+Headings other than 0 take a heading-0 tile as a style reference wherever a tile has no neighbour yet.
 """
 from __future__ import annotations
 
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -17,12 +19,16 @@ from scipy import ndimage
 
 from . import geo
 from .render import render_tile
-from .stylize import PROMPT, load_env, stylize
+from .stylize import NO_RAILS_PROMPT, PROMPT, RAILS_PROMPT, load_env, stylize
 
 ROOT = Path(__file__).resolve().parent.parent
 M = 128
 N = geo.TILE_PX
-H0 = ROOT / "out" / "h0"
+HEADING = 0
+
+
+def hdir():
+    return ROOT / "out" / f"h{HEADING}"
 SEAM_PROMPT = (
     " Parts of image 1 that are already drawn as pixel art must stay exactly as they are; redraw only the "
     "realistic rendered parts and continue the existing pixel art seamlessly across the boundary."
@@ -30,15 +36,22 @@ SEAM_PROMPT = (
 
 
 def rendered(i, j):
-    f = H0 / "render_m" / f"{i}_{j}.png"
+    f = hdir() / "render_m" / f"{i}_{j}.png"
     if not f.exists():
         f.parent.mkdir(parents=True, exist_ok=True)
-        render_tile(i, j, geo.View(0), margin_px=M).save(f)
+        img = render_tile(i, j, geo.View(HEADING), margin_px=M)
+        img.save(f)
+        if img.info["rails"]:
+            f.with_suffix(".rails").touch()
     return Image.open(f).convert("RGB")
 
 
+def has_rails(i, j):
+    return (hdir() / "render_m" / f"{i}_{j}.rails").exists()
+
+
 def art_path(i, j):
-    return H0 / "art" / f"{i}_{j}.png"
+    return hdir() / "art" / f"{i}_{j}.png"
 
 
 def compose(i, j):
@@ -111,17 +124,26 @@ def build_wave(wave, workers=6):
         return
     inputs = {t: compose(*t) for t in todo}
 
+    ref = style_ref()
+
     def draw(t):
         src, mask, n = inputs[t]
-        out = stylize(src, prompt=PROMPT + (SEAM_PROMPT if n else ""), seed=7)
-        return match_seams(out, src, mask)
+        for attempt in range(4):
+            try:
+                prompt = PROMPT + (RAILS_PROMPT if has_rails(*t) else NO_RAILS_PROMPT) + (SEAM_PROMPT if n else "")
+                out = stylize(src, ref=None if n else ref, prompt=prompt, seed=7 + attempt)
+                return match_seams(out, src, mask)
+            except Exception as e:   # network / fal hiccup: retry, then give up on this tile only
+                print("retry", t, attempt, repr(e)[:200], flush=True)
+                time.sleep(5 * (attempt + 1))
+        return None
 
     with ThreadPoolExecutor(workers) as ex:
-        outs = dict(zip(todo, ex.map(draw, todo)))
-    (H0 / "art_m").mkdir(parents=True, exist_ok=True)
+        outs = {t: o for t, o in zip(todo, ex.map(draw, todo)) if o is not None}
+    (hdir() / "art_m").mkdir(parents=True, exist_ok=True)
     art_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
     for (i, j), out in outs.items():
-        _save(out, H0 / "art_m" / f"{i}_{j}.png")
+        _save(out, hdir() / "art_m" / f"{i}_{j}.png")
         _save(out.crop((M, M, M + N, M + N)), art_path(i, j))
         feather_into_neighbours(i, j, out)
         print("art", i, j, f"({inputs[(i, j)][2]} neighbours)", flush=True)
@@ -133,7 +155,7 @@ def build(tiles):
     tiles = sorted(tiles, key=lambda t: (t[0] + t[1], t[1]))
     # fetch the IGN data in parallel first
     from . import ign
-    boxes = [geo.View(0).ground_bbox(i * geo.TILE_M - 50, j * geo.TILE_M - 50, (i + 1) * geo.TILE_M + 50, (j + 1) * geo.TILE_M + 50) for i, j in tiles]
+    boxes = [geo.View(HEADING).ground_bbox(i * geo.TILE_M - 50, j * geo.TILE_M - 50, (i + 1) * geo.TILE_M + 50, (j + 1) * geo.TILE_M + 50) for i, j in tiles]
     ign.prefetch(boxes)
     # pre-render sequentially (single GL context)
     for k, (i, j) in enumerate(tiles):
@@ -146,14 +168,30 @@ def build(tiles):
         build_wave(waves[d])
 
 
+def style_ref():
+    """A heading-0 tile of the old town, to anchor the look of the other headings."""
+    if HEADING == 0:
+        return None
+    f = ROOT / "out" / "h0" / "art" / "0_0.png"
+    return Image.open(f).convert("RGB") if f.exists() else None
+
+
 def main(argv):
+    global HEADING
     load_env()
-    if argv and argv[0] == "--area":
-        tiles = geo.View(0).tiles_for_area()
-    else:
-        i0, j0, i1, j1 = map(int, argv)
-        tiles = [(i, j) for j in range(j0, j1 + 1) for i in range(i0, i1 + 1)]
-    build(tiles)
+    heads = [0]
+    if argv[:1] == ["--heading"]:
+        heads = list(range(8)) if argv[1] == "all" else [int(argv[1])]
+        argv = argv[2:]
+    for h in heads:
+        HEADING = h
+        print(f"== heading {h}", flush=True)
+        if argv and argv[0] == "--area":
+            tiles = geo.View(h).tiles_for_area()
+        else:
+            i0, j0, i1, j1 = map(int, argv)
+            tiles = [(i, j) for j in range(j0, j1 + 1) for i in range(i0, i1 + 1)]
+        build(tiles)
 
 
 if __name__ == "__main__":

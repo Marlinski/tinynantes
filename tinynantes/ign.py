@@ -164,10 +164,49 @@ def prefetch(bboxes, kinds=("mns", "mnt", "cls", "bati", "eau", "ortho"), worker
             for cy in range(math.floor(b[1] / CHUNK), math.floor((b[3] - 1e-6) / CHUNK) + 1):
                 keys.update((k, cx, cy) for k in kinds)
     keys = sorted(keys)
+    chunks = sorted({(cx, cy) for _, cx, cy in keys})
     done = 0
     from concurrent.futures import as_completed
     with ThreadPoolExecutor(workers) as ex:
-        for _ in as_completed([ex.submit(chunk, *k) for k in keys]):
+        futs = [ex.submit(chunk, *k) for k in keys] + [ex.submit(_rail_chunk, *c) for c in chunks]
+        for _ in as_completed(futs):
             done += 1
-            if done % 25 == 0 or done == len(keys):
-                print(f"ign {done}/{len(keys)}", flush=True)
+            if done % 25 == 0 or done == len(futs):
+                print(f"ign {done}/{len(futs)}", flush=True)
+
+
+def _rail_chunk(cx, cy):
+    """BD TOPO rail segments (tramway, railway) touching one chunk, cached as JSON."""
+    d = CACHE / "rail"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{cx}_{cy}.json"
+    if not f.exists():
+        x0, y0 = cx * CHUNK, cy * CHUNK
+        raw = _get(WFS, {
+            "SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
+            "TYPENAMES": "BDTOPO_V3:troncon_de_voie_ferree", "SRSNAME": "EPSG:2154",
+            "BBOX": f"{x0},{y0},{x0 + CHUNK},{y0 + CHUNK},EPSG:2154", "OUTPUTFORMAT": "application/json",
+            "COUNT": 5000,
+        })
+        out = []
+        for ft in json.loads(raw)["features"]:
+            p, g = ft["properties"], ft.get("geometry") or {}
+            lines = g["coordinates"] if g.get("type") == "MultiLineString" else [g.get("coordinates") or []]
+            for line in lines:
+                out.append({"id": p.get("cleabs"), "nature": p.get("nature"), "tracks": p.get("nombre_de_voies") or 1,
+                            "level": str(p.get("position_par_rapport_au_sol") or "0"),
+                            "xy": [[round(c[0], 2), round(c[1], 2)] for c in line]})
+        f.write_text(json.dumps(out))
+    return json.loads(f.read_text())
+
+
+def rails(bbox):
+    """Rail centrelines (deduplicated) for every chunk under bbox."""
+    seen, out = set(), []
+    for cx in range(math.floor(bbox[0] / CHUNK), math.floor((bbox[2] - 1e-6) / CHUNK) + 1):
+        for cy in range(math.floor(bbox[1] / CHUNK), math.floor((bbox[3] - 1e-6) / CHUNK) + 1):
+            for r in _rail_chunk(cx, cy):
+                key = (r["id"], tuple(r["xy"][0]))
+                if key not in seen:
+                    seen.add(key); out.append(r)
+    return out

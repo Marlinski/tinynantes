@@ -24,8 +24,9 @@ TILE_M = TILE_PX * M_PER_PX     # 300.0
 ELEV = math.radians(45.0)
 Z_MIN, Z_MAX = -5.0, 110.0      # absolute height range we expect (m, NGF)
 
-# Area of the first version: hypercentre + Île de Nantes (Lambert-93 bbox).
-AREA = (354000.0, 6686800.0, 357500.0, 6690300.0)
+# Mapped area (Lambert-93 bbox): 6 x 6 km inner ring, from Chantenay to Doulon,
+# up the Erdre to the university and down to north Rezé. (v1 was 354000, 6686800, 357500, 6690300.)
+AREA = (352500.0, 6685500.0, 358500.0, 6691500.0)
 
 
 @dataclass(frozen=True)
