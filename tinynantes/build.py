@@ -97,13 +97,13 @@ def match_seams(out, src, mask, reach=300, sigma=20):
     return Image.fromarray(np.clip(o, 0, 255).astype("u1"))
 
 
-def feather_into_neighbours(i, j, out):
-    """Dissolve this tile's left/top margins into the finished neighbours' edges, so content changes
+def feather_into_neighbours(i, j, out, sides=((-1, 0), (0, -1))):
+    """Dissolve this tile's margins into the finished neighbours' edges, so content changes
     gradually over M pixels instead of switching at the tile boundary."""
     o = np.asarray(out, "f4")
     ramp = (np.arange(M, dtype="f4") + 0.5) / M          # 0 far from us -> 1 at the shared edge
     ramp = ramp * ramp * (3 - 2 * ramp)                  # smoothstep
-    for di, dj in ((-1, 0), (0, -1)):
+    for di, dj in sides:
         f = art_path(i + di, j + dj)
         if not f.exists():
             continue
@@ -111,10 +111,84 @@ def feather_into_neighbours(i, j, out):
         if di == -1:   # strip: our x in [0, M), y in core -> their x in [N-M, N)
             strip, a = o[M:M + N, 0:M], ramp[None, :, None]
             nb[:, N - M:] = nb[:, N - M:] * (1 - a) + strip * a
-        else:          # our y in [0, M), x in core -> their y in [N-M, N)
+        elif dj == -1:  # our y in [0, M), x in core -> their y in [N-M, N)
             strip, a = o[0:M, M:M + N], ramp[:, None, None]
             nb[N - M:, :] = nb[N - M:, :] * (1 - a) + strip * a
+        elif di == 1:  # our x in [M+N, 2M+N) -> their x in [0, M), shared edge at their x = 0
+            strip, a = o[M:M + N, M + N:], ramp[::-1][None, :, None]
+            nb[:, :M] = nb[:, :M] * (1 - a) + strip * a
+        else:          # dj == 1: our y in [M+N, 2M+N) -> their y in [0, M)
+            strip, a = o[M + N:, M:M + N], ramp[::-1][:, None, None]
+            nb[:M, :] = nb[:M, :] * (1 - a) + strip * a
         _save(Image.fromarray(np.clip(nb, 0, 255).astype("u1")), f)
+
+
+NO_WATER_PROMPT = (
+    " This area has no ponds, pools, lakes or fountains: everything that is not flat blue in image 1 is land, "
+    "pavement, grass, sports ground or roof, and must be drawn as such."
+)
+
+
+def redraw_tile(i, j, tries=3):
+    """Redraw one finished tile with all 8 finished neighbours pasted around it (so it fits on every side),
+    keeping the attempt with the least invented water, then feather it into the 4 neighbours."""
+    from .qa import invented_water_arrays
+    src = rendered(i, j).copy()
+    ren_core = np.asarray(src)[M:M + N, M:M + N]
+    mask = np.zeros((src.height, src.width), bool)
+    for dj in (-1, 0, 1):
+        for di in (-1, 0, 1):
+            f = art_path(i + di, j + dj)
+            if (di or dj) and f.exists():
+                x, y = M + di * N, M + dj * N
+                src.paste(Image.open(f).convert("RGB"), (x, y))
+                mask[max(y, 0):y + N, max(x, 0):x + N] = True
+    prompt = PROMPT + (RAILS_PROMPT if has_rails(i, j) else NO_RAILS_PROMPT) + NO_WATER_PROMPT + SEAM_PROMPT
+    best = None
+    for k in range(tries):
+        try:
+            out = match_seams(stylize(src, prompt=prompt, seed=101 + k), src, mask)
+        except Exception as e:
+            print("retry", (i, j), k, repr(e)[:200], flush=True)
+            continue
+        px, _ = invented_water_arrays(np.asarray(out)[M:M + N, M:M + N], ren_core)
+        if best is None or px < best[0]:
+            best = (px, out)
+        if px < 1500:
+            break
+    if best is None:
+        return None
+    px, out = best
+    _save(out, hdir() / "art_m" / f"{i}_{j}.png")
+    _save(out.crop((M, M, M + N, M + N)), art_path(i, j))
+    feather_into_neighbours(i, j, out, sides=((-1, 0), (0, -1), (1, 0), (0, 1)))
+    return px
+
+
+def fix_water(tiles, min_px=1500):
+    """Find tiles with invented water and redraw them (sequentially: each redraw edits its neighbours)."""
+    from .qa import invented_water
+    bad = []
+    for i, j in tiles:
+        if art_path(i, j).exists():
+            px, _ = invented_water(HEADING, i, j)
+            if px >= min_px:
+                bad.append((px, i, j))
+    print(f"fix: {len(bad)} tiles with invented water in h{HEADING}", flush=True)
+    # a redraw reads neighbours within 1 tile and writes its 4 direct neighbours, so tiles 3 apart
+    # never touch the same files: draw each (i mod 3, j mod 3) class in parallel
+    groups = {}
+    for px, i, j in bad:
+        groups.setdefault((i % 3, j % 3), []).append((px, i, j))
+
+    def one(t):
+        px, i, j = t
+        after = redraw_tile(i, j)
+        print(f"fix h{HEADING} {i}_{j}: {px} -> {after} px", flush=True)
+
+    with ThreadPoolExecutor(6) as ex:
+        for g in groups.values():
+            list(ex.map(one, g))
 
 
 def _save(img, f):
@@ -203,6 +277,7 @@ def main(argv):
             i0, j0, i1, j1 = map(int, argv)
             tiles = [(i, j) for j in range(j0, j1 + 1) for i in range(i0, i1 + 1)]
         build(tiles)
+        fix_water(tiles)
 
 
 if __name__ == "__main__":

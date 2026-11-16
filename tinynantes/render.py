@@ -55,6 +55,9 @@ void main() {
     if (n.z < 0.0) n = -n;
     vec2 uv = vec2((v_pos.x - u_obox.x) / u_obox.z, (u_obox.y - v_pos.y) / u_obox.w);
     vec3 ortho = texture(u_ortho, uv).rgb;
+    // only real water may look blue: neutralise bluish slate, shadows and sports surfaces,
+    // which the redraw model otherwise turns into invented ponds and pools
+    ortho.b = min(ortho.b, max(ortho.r, ortho.g) * 1.02);
     float lam = max(dot(n, u_sun), 0.0);
     bool steep = n.z < 0.6;
     vec3 col;
