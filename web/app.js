@@ -95,6 +95,9 @@ function draw() {
   ctx.restore();
   drawLabels();
   drawMini();
+  // tilt-shift is a close-up effect: fade it out as we zoom out
+  const z = Math.log2(view.s / minS) / Math.log2(maxS / minS);
+  document.getElementById("tilt").style.setProperty("--tilt", `${(0.6 + 3.4 * Math.min(1, z * 1.6)).toFixed(2)}px`);
 }
 
 function toScreen(x, y) { return [(x - view.x) * view.s + innerWidth / 2, (y - view.y) * view.s + innerHeight / 2]; }
