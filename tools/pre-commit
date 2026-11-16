@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuse commits that contain anything that looks like a secret.
+pat='(fal_sk_[A-Za-z0-9]|FAL_KEY *= *[^ $]|sk-[A-Za-z0-9]{20}|AIza[0-9A-Za-z_-]{30}|ghp_[A-Za-z0-9]{20}|-----BEGIN [A-Z ]*PRIVATE KEY)'
+if git diff --cached -U0 --no-color | grep '^+' | grep -qE "$pat"; then
+  echo "pre-commit: possible secret in staged changes, commit refused." >&2; exit 1
+fi
+if git diff --cached --name-only | grep -qE '(^|/)\.env'; then
+  echo "pre-commit: .env file staged, commit refused." >&2; exit 1
+fi

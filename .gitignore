@@ -1,0 +1,13 @@
+# secrets
+.env
+.env.*
+*.key
+*.pem
+# local data / caches / third-party research material
+cache/
+research/
+.playwright-mcp/
+.venv/
+__pycache__/
+*.pyc
+out/

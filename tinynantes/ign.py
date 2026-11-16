@@ -1,0 +1,143 @@
+"""Fetch and cache IGN Géoplateforme open data in fixed 500 m chunks (Lambert-93).
+
+- MNS / MNT: LiDAR HD surface and terrain models, 0.5 m, float32 (WMS-R BIL)
+- ortho:     BD ORTHO 20 cm (WMS-R JPEG)
+- buildings: BD TOPO V3 'batiment' footprints rasterised to a 0.5 m mask (WFS)
+"""
+from __future__ import annotations
+
+import json
+import math
+import time
+from pathlib import Path
+
+import numpy as np
+import requests
+from PIL import Image, ImageDraw
+
+CACHE = Path(__file__).resolve().parent.parent / "cache" / "ign"
+CHUNK = 500.0
+DEM_RES = 0.5
+ORTHO_RES = 0.2
+WMS = "https://data.geopf.fr/wms-r/wms"
+WFS = "https://data.geopf.fr/wfs/ows"
+LAYERS = {
+    "mns": "IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
+    "mnt": "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
+    "ortho": "HR.ORTHOIMAGERY.ORTHOPHOTOS",
+    "cls": "IGNF_LIDAR-HD_CLASS",
+}
+# LiDAR HD classification map colours -> class codes
+CLS_COLORS = {
+    (207, 150, 70): 2,    # ground
+    (90, 110, 40): 3,     # low vegetation
+    (70, 150, 60): 5,     # medium/high vegetation
+    (180, 20, 20): 6,     # building
+    (40, 140, 140): 9,    # water
+    (255, 0, 0): 17,      # bridge deck
+    (255, 0, 255): 64,    # permanent above-ground
+}
+_session = requests.Session()
+_session.headers["User-Agent"] = "tinynantes-map/0.1"
+
+
+def _get(url, params, tries=5):
+    for k in range(tries):
+        try:
+            r = _session.get(url, params=params, timeout=120)
+            if r.status_code == 200 and not r.headers.get("content-type", "").startswith(("text/xml", "application/vnd.ogc.se")):
+                return r.content
+            err = f"{r.status_code} {r.text[:200]}"
+        except requests.RequestException as e:
+            err = str(e)
+        time.sleep(2 * (k + 1))
+    raise RuntimeError(f"IGN request failed: {err}")
+
+
+def _wms(layer, bbox, w, h, fmt):
+    return _get(WMS, {
+        "SERVICE": "WMS", "VERSION": "1.3.0", "REQUEST": "GetMap", "CRS": "EPSG:2154",
+        "BBOX": ",".join(f"{v:.2f}" for v in bbox), "LAYERS": layer, "STYLES": "",
+        "FORMAT": fmt, "WIDTH": w, "HEIGHT": h,
+    })
+
+
+def chunk(kind: str, cx: int, cy: int):
+    """Return one chunk as a numpy array (row 0 = north)."""
+    d = CACHE / kind
+    d.mkdir(parents=True, exist_ok=True)
+    x0, y0 = cx * CHUNK, cy * CHUNK
+    bbox = (x0, y0, x0 + CHUNK, y0 + CHUNK)
+    if kind in ("mns", "mnt"):
+        f = d / f"{cx}_{cy}.npy"
+        if not f.exists():
+            n = int(CHUNK / DEM_RES)
+            a = np.frombuffer(_wms(LAYERS[kind], bbox, n, n, "image/x-bil;bits=32"), "<f4").reshape(n, n).copy()
+            np.save(f, a)
+        return np.load(f)
+    if kind == "ortho":
+        f = d / f"{cx}_{cy}.jpg"
+        if not f.exists():
+            n = int(CHUNK / ORTHO_RES)
+            f.write_bytes(_wms(LAYERS[kind], bbox, n, n, "image/jpeg"))
+        return np.asarray(Image.open(f).convert("RGB"))
+    if kind == "cls":
+        f = d / f"{cx}_{cy}.png"
+        if not f.exists():
+            n = int(CHUNK / DEM_RES)
+            rgb = np.asarray(Image.open(__import__("io").BytesIO(_wms(LAYERS[kind], bbox, n, n, "image/png"))).convert("RGB"))
+            code = np.zeros(rgb.shape[:2], "u1")
+            for c, v in CLS_COLORS.items():
+                code[(rgb == c).all(-1)] = v
+            Image.fromarray(code).save(f)
+        return np.asarray(Image.open(f))
+    if kind == "bati":
+        f = d / f"{cx}_{cy}.png"
+        if not f.exists():
+            _buildings_mask(bbox).save(f)
+        return np.asarray(Image.open(f)) > 0
+    raise ValueError(kind)
+
+
+def _buildings_mask(bbox):
+    x0, y0, x1, y1 = bbox
+    n = int(CHUNK / DEM_RES)
+    feats, start = [], 0
+    while True:
+        raw = _get(WFS, {
+            "SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
+            "TYPENAMES": "BDTOPO_V3:batiment", "SRSNAME": "EPSG:2154",
+            "BBOX": f"{x0},{y0},{x1},{y1},EPSG:2154", "OUTPUTFORMAT": "application/json",
+            "COUNT": 5000, "STARTINDEX": start,
+        })
+        page = json.loads(raw)["features"]
+        feats += page
+        if len(page) < 5000:
+            break
+        start += 5000
+    img = Image.new("L", (n, n), 0)
+    dr = ImageDraw.Draw(img)
+
+    def px(c):
+        return ((c[0] - x0) / DEM_RES, (y1 - c[1]) / DEM_RES)
+
+    for f in feats:
+        g = f.get("geometry") or {}
+        polys = g["coordinates"] if g.get("type") == "MultiPolygon" else [g.get("coordinates") or []]
+        for poly in polys:
+            for k, ring in enumerate(poly):
+                dr.polygon([px(c) for c in ring], fill=255 if k == 0 else 0)
+    return img
+
+
+def mosaic(kind: str, bbox):
+    """Assemble chunks covering bbox (x0,y0,x1,y1). Returns (array, (x0,y1) of top-left, res)."""
+    res = ORTHO_RES if kind == "ortho" else DEM_RES
+    cx0, cy0 = math.floor(bbox[0] / CHUNK), math.floor(bbox[1] / CHUNK)
+    cx1, cy1 = math.floor((bbox[2] - 1e-6) / CHUNK), math.floor((bbox[3] - 1e-6) / CHUNK)
+    n = int(CHUNK / res)
+    rows = []
+    for cy in range(cy1, cy0 - 1, -1):          # north first
+        rows.append(np.concatenate([chunk(kind, cx, cy) for cx in range(cx0, cx1 + 1)], axis=1))
+    a = np.concatenate(rows, axis=0)
+    return a, (cx0 * CHUNK, (cy1 + 1) * CHUNK), res
