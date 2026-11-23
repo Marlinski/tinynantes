@@ -108,3 +108,25 @@ def fix_invented_water(art: np.ndarray, ren: np.ndarray, src: np.ndarray | None 
     out = a.copy()
     out[mask] = fill[mask]
     return np.clip(out, 0, 255).astype("u1")
+
+
+WATER_RGB = np.array([52, 112, 168], "f4")
+
+
+def unify_water(art: np.ndarray, real: np.ndarray) -> np.ndarray:
+    """Give every patch of real water (bool mask, from g3d.water_mask) the same colour across all tiles,
+    keeping a little of the painted texture (ripples, reflections). Only blue-ish painted pixels are touched,
+    so boats, bridge decks and pontoons painted over the water stay as they are."""
+    a = art.astype("f4")
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    blue = (b > r * 1.08) & (b > g * 0.92) & (b > 60)
+    m = ndimage.binary_erosion(real, iterations=3) & blue
+    if not m.any():
+        return art
+    lum = a.mean(-1)
+    ref = ndimage.uniform_filter(np.where(m, lum, 0), 61) / np.maximum(ndimage.uniform_filter(m.astype("f4"), 61), 1e-3)
+    tex = np.clip((lum - ref) / 60.0, -0.25, 0.25)          # local detail only, not the patch's overall tone
+    col = WATER_RGB[None, None, :] * (1.0 + tex[..., None])
+    soft = ndimage.gaussian_filter(m.astype("f4"), 1.5)[..., None]
+    out = a * (1 - soft) + col * soft
+    return np.clip(out, 0, 255).astype("u1")

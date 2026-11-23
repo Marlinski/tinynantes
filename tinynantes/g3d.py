@@ -216,6 +216,8 @@ def load_glb(data: bytes):
                 faces = np.asarray(d.faces, "u4").reshape(-1, 3)
                 uv = np.asarray(d.tex_coord, "f4").reshape(-1, 2)
             else:
+                if prim.attributes.TEXCOORD_0 is None or prim.material is None:
+                    continue   # untextured bits (rare): nothing to draw them with
                 pts = acc(prim.attributes.POSITION).astype("f8")
                 uv = acc(prim.attributes.TEXCOORD_0)
                 faces = acc(prim.indices).astype("u4").reshape(-1, 3)

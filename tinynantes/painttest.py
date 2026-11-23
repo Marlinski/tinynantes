@@ -130,3 +130,39 @@ def seam_test(h, tiles, variant="min9b", M=128, N=1024, src="r2"):
     out = Image.fromarray(np.clip(acc / np.maximum(wsum, 1e-6), 0, 255).astype("u1")).crop((M, M, W - M, H - M))
     out.save(OUT / (f"seam_h{h}.png" if src == "r2" else f"seam_{src}_h{h}.png"))
     return out
+
+
+def g3d_block(h, tiles, name, variant="g9b", seed=1):
+    """Paint Google renders (out/g3d/hH) independently, fix invented water, lay the rails back, stitch.
+    -> out/preview/<name>.png"""
+    import numpy as np
+    from . import g3d
+    from .qa import fix_invented_water, unify_water
+    from .stitch import stitch
+    load_env()
+    d = OUT / variant
+    d.mkdir(parents=True, exist_ok=True)
+    src_dir = ROOT / "out" / "g3d" / f"h{h}"
+
+    def one(t):
+        f = d / f"h{h}_{t[0]}_{t[1]}.png"
+        if not f.exists():
+            paint(variant, Image.open(src_dir / f"{t[0]}_{t[1]}.png").convert("RGB"), seed=seed).save(f)
+    list(ThreadPoolExecutor(4).map(one, tiles))
+    arts = {}
+    for i, j in tiles:
+        a = np.asarray(Image.open(d / f"h{h}_{i}_{j}.png").convert("RGB"))
+        src = np.asarray(Image.open(src_dir / f"{i}_{j}.png").convert("RGB"))
+        wm = g3d.water_mask(i, j, geo_view(h))
+        a = unify_water(fix_invented_water(a, wm, src), wm)
+        rf = src_dir / f"{i}_{j}_rails.png"
+        arts[(i, j)] = g3d.overlay_rails(a, Image.open(rf) if rf.exists() else None)
+    out = Image.fromarray(stitch(arts))
+    (ROOT / "out" / "preview").mkdir(parents=True, exist_ok=True)
+    out.save(ROOT / "out" / "preview" / f"{name}.png")
+    return out
+
+
+def geo_view(h):
+    from . import geo
+    return geo.View(h)
