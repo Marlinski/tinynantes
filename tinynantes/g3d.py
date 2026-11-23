@@ -37,8 +37,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "cache" / "g3d"
 API = "https://tile.googleapis.com"
 TARGET_ERR = float(os.environ.get("G3D_ERR", "1.0"))   # metres
-GEOID = 49.6   # ellipsoid - NGF height around Nantes (refined by calibrate())
+GEOID = 47.0   # ellipsoid - NGF height around Nantes, calibrated on the LiDAR terrain (ground mode)
 SS = 2
+RAILS = os.environ.get("G3D_RAILS", "1") == "1"
 
 _ecef2geo = Transformer.from_crs("EPSG:4978", "EPSG:4979", always_xy=True)
 _geo2l93 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
@@ -246,10 +247,87 @@ void main() { f_color = vec4(texture(u_tex, v_uv).rgb, 1.0); }
 """
 
 
+VS_C = """
+#version 330
+in vec3 in_p; in vec3 in_c;
+uniform vec3 u_r, u_d, u_b; uniform vec4 u_view;
+out vec3 v_c;
+void main() {
+    vec3 p = in_p + u_b * 1.5;     // pulled 1.5 m toward the camera: wins over the ground, loses to buildings
+    float sx = dot(p, u_r), sy = dot(p, u_d), dp = dot(p, u_b);
+    gl_Position = vec4((sx - u_view.x) / u_view.z, -(sy - u_view.y) / u_view.z, -(dp - u_view.w) / 1500.0, 1.0);
+    v_c = in_c;
+}
+"""
+FS_C = """
+#version 330
+in vec3 v_c; out vec4 f_color;
+void main() { f_color = vec4(v_c, 1.0); }
+"""
+
+
 @lru_cache(maxsize=1)
 def _ctx():
     ctx = moderngl.create_standalone_context(backend="egl")
-    return ctx, ctx.program(vertex_shader=VS, fragment_shader=FS)
+    return ctx, ctx.program(vertex_shader=VS, fragment_shader=FS), ctx.program(vertex_shader=VS_C, fragment_shader=FS_C)
+
+
+def rail_mesh(bbox):
+    """Ballast, sleepers and rails of BD TOPO railways and tram lines (not tunnels or bridges) at terrain height,
+    as (vertices [x y z r g b], triangles) in the local frame."""
+    from . import ign
+    from .render import _offset
+    mnt, (gx0, gy1), res = ign.mosaic("mnt", bbox)
+    ox, oy = geo.ORIGIN
+
+    def z_at(p):
+        c = np.clip(((p[:, 0] - gx0) / res).astype(int), 0, mnt.shape[1] - 1)
+        r = np.clip(((gy1 - p[:, 1]) / res).astype(int), 0, mnt.shape[0] - 1)
+        return mnt[r, c]
+
+    V, F = [], []
+
+    def strip(a, b, z, col, dz=0.0):
+        n = len(a)
+        base = sum(len(v) for v in V)
+        pts = np.concatenate([a, b]); zz = np.concatenate([z, z]) + dz
+        V.append(np.column_stack([pts[:, 0] - ox, pts[:, 1] - oy, zz, np.tile(col, (2 * n, 1))]))
+        k = np.arange(n - 1)
+        F.append(np.concatenate([np.column_stack([base + k, base + k + 1, base + n + k]),
+                                 np.column_stack([base + k + 1, base + n + k + 1, base + n + k])]))
+
+    for ln in ign.rails(bbox):
+        if ln["level"] != "0" or len(ln["xy"]) < 2:
+            continue
+        tram = ln["nature"] == "Tramway"
+        p = np.asarray(ln["xy"], "f8")
+        seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+        s = np.r_[0, np.cumsum(seg)]
+        if s[-1] < 1:
+            continue
+        t = np.arange(0, s[-1], 1.0)
+        p = np.column_stack([np.interp(t, s, p[:, 0]), np.interp(t, s, p[:, 1])])
+        ntr = int(ln["tracks"])
+        for k in range(ntr):
+            c = _offset(p, (k - (ntr - 1) / 2) * (3.4 if tram else 4.5))
+            z = z_at(c)
+            strip(_offset(c, -1.5 if tram else -1.7), _offset(c, 1.5 if tram else 1.7), z,
+                  (0.55, 0.55, 0.53) if tram else (0.47, 0.42, 0.36))                               # bed / ballast
+            for side in (-0.72, 0.72):
+                strip(_offset(c, side - 0.08), _offset(c, side + 0.08), z, (0.82, 0.82, 0.85), 0.05)   # rails
+            # sleepers every 0.65 m
+            tan = np.gradient(c, axis=0); tan /= np.maximum(np.linalg.norm(tan, axis=1, keepdims=True), 1e-9)
+            nrm = np.column_stack([-tan[:, 1], tan[:, 0]])
+            for off in np.arange(0, 1.0, 0.65):
+                m = c + tan * off
+                for q in range(len(m)):
+                    a = m[q] - nrm[q] * 1.25; b = m[q] + nrm[q] * 1.25
+                    d = tan[q] * 0.11
+                    strip(np.array([a - d, a + d]), np.array([b - d, b + d]), np.array([z[q], z[q]]),
+                          (0.42, 0.42, 0.42) if tram else (0.30, 0.25, 0.21), 0.02)
+    if not V:
+        return None
+    return np.concatenate(V).astype("f4"), np.concatenate(F).astype("u4")
 
 
 def render_tile(i, j, view=geo.View(0), margin_px=128, client=None):
@@ -262,13 +340,15 @@ def render_tile(i, j, view=geo.View(0), margin_px=128, client=None):
     uris = collect(client, (bx0 - ox, by0 - oy, bx1 - ox, by1 - oy))
     with ThreadPoolExecutor(16) as ex:
         blobs = list(ex.map(client.get, uris))
-    ctx, prog = _ctx()
+    ctx, prog, cprog = _ctx()
     r, dn, bk = view.axes
-    prog["u_r"].value = tuple(r); prog["u_d"].value = tuple(dn); prog["u_b"].value = tuple(bk)
+    for pr in (prog, cprog):
+        pr["u_r"].value = tuple(r); pr["u_d"].value = tuple(dn); pr["u_b"].value = tuple(bk)
     cx, cy = (i + 0.5) * T, (j + 0.5) * T
     inv = np.linalg.inv(np.array([[r[0], r[1]], [dn[0], dn[1]]]))
     gx, gy = inv @ np.array([cx - r[2] * 10.0, cy - dn[2] * 10.0])
-    prog["u_view"].value = (cx, cy, T / 2 + mm, float(gx * bk[0] + gy * bk[1] + 10.0 * bk[2]))
+    for pr in (prog, cprog):
+        pr["u_view"].value = (cx, cy, T / 2 + mm, float(gx * bk[0] + gy * bk[1] + 10.0 * bk[2]))
     size = geo.TILE_PX + 2 * margin_px
     n = size * SS
     fbo = ctx.simple_framebuffer((n, n), components=3)
@@ -285,6 +365,14 @@ def render_tile(i, j, view=geo.View(0), margin_px=128, client=None):
             vao = ctx.vertex_array(prog, [(vbo, "3f 2f", "in_p", "in_uv")], ibo)
             vao.render(moderngl.TRIANGLES)
             for o in (vao, vbo, ibo, t):
+                o.release()
+    if RAILS:
+        rm = rail_mesh((bx0, by0, bx1, by1))
+        if rm is not None:
+            vbo = ctx.buffer(rm[0].tobytes()); ibo = ctx.buffer(rm[1].tobytes())
+            vao = ctx.vertex_array(cprog, [(vbo, "3f 3f", "in_p", "in_c")], ibo)
+            vao.render(moderngl.TRIANGLES)
+            for o in (vao, vbo, ibo):
                 o.release()
     img = Image.frombytes("RGB", (n, n), fbo.read(components=3)).transpose(Image.FLIP_TOP_BOTTOM)
     fbo.release()
