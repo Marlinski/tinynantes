@@ -5,7 +5,11 @@
 //!   upstream APIs: Naolib timetable (GTFS, daily) + delays (GTFS-RT, every 30 s), road traffic (every 3 min),
 //!   events (hourly). When an upstream fails, the last good copy keeps being served, with its age.
 //!
-//! Env: TN_WEB (default ../web), TN_DATA (cache dir, default ./data), TN_PORT (default 8080), RUST_LOG.
+//! - planes (ADS-B), SNCF trains and the station board, players (sign-in, WebSocket positions, logged chat),
+//!   places (crawled menus) in SQLite
+//!
+//! Env: TN_WEB (default ../web), TN_DATA (cache + SQLite, default ./data), TN_PLACES (crawled places, default
+//! TN_DATA/places), TN_PORT (default 8080), RUST_LOG.
 
 mod feeds;
 mod gtfs;
@@ -102,7 +106,8 @@ async fn main() -> anyhow::Result<()> {
     let port: u16 = std::env::var("TN_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let origin = feeds::origin_from_world(&web.join("data/world/world.json"))?;
     let http = reqwest::Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(120)).build()?;
-    let store = Arc::new(store::Store::open(&data.join("tinynantes.db"), data.join("places"))?);
+    let places = std::env::var("TN_PLACES").map(PathBuf::from).unwrap_or_else(|_| data.join("places"));
+    let store = Arc::new(store::Store::open(&data.join("tinynantes.db"), places)?);
     // last good copies from the previous run: served until the first refresh succeeds
     let restore = |key: &str| {
         let mut c = Cached::<Bytes>::default();
