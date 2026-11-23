@@ -13,7 +13,7 @@ const COS45 = Math.SQRT1_2;
 
 const world = { ready: false, shapes: {}, routes: {}, terrain: null, rails: null, pois: [] };
 let vehicles = [], clockSkew = 0;
-let sections = [], cars = [];
+let sections = [];
 let events = [], planes = [], planesAt = 0, trains = [];
 let menus = new Set();
 const hgt = new Map();
@@ -81,7 +81,7 @@ async function pollVehicles() {
   } catch { /* keep animating the last snapshot */ }
 }
 async function pollTraffic() {
-  try { sections = (await getJSON("api/traffic")).items; spawnCars(); } catch { /* keep the current cars */ }
+  try { sections = (await getJSON("api/traffic")).items; } catch { /* keep */ }
 }
 async function pollEvents() {
   try { events = (await getJSON("api/events")).items.filter((e) => !e.canceled); } catch { /* none */ }
@@ -138,20 +138,58 @@ function vehiclePose(v, t) {
   return p;
 }
 
-// ---------------------------------------------------------------- cars from measured traffic
-const CAR_COLORS = ["#d8d4cc", "#2b2f36", "#9aa3ad", "#b8322f", "#2f5b8f", "#e8e2d4", "#4b5a3c", "#c7a23a"];
-function spawnCars() {
-  cars = [];
-  for (const s of sections) {
-    const shape = withCum({ p: s.p.map(([x, y]) => [x, y, zAt(x, y)]) });
-    const v = Math.max(3, (s.speed || 30)) / 3.6;
-    const perKm = s.flow && s.speed ? s.flow / Math.max(5, s.speed) : 6;   // density = flow / speed
-    const n = Math.min(60, Math.round(shape.len / 1000 * perKm * (0.7 + Math.random() * 0.6)));
-    for (let k = 0; k < n; k++) {
-      cars.push({ shape, v: v * (0.85 + Math.random() * 0.3), off: Math.random() * shape.len,
-                  color: CAR_COLORS[(Math.random() * CAR_COLORS.length) | 0] });
-    }
+// ---------------------------------------------------------------- the inhabitants (simulated by the server)
+// The server runs the city (cars on the measured traffic, people going to places, bikes) and streams what is in
+// our view 4 times a second over /api/world. We only draw it, 300 ms in the past, interpolating between frames.
+const CAR_COLORS = ["#d8d4cc", "#2b2f36", "#9aa3ad", "#b8322f", "#2f5b8f", "#e8e2d4", "#4b5a3c", "#c7a23a", "#7a2e4a", "#e6e6e2"];
+const CLOTHES = ["#c0392b", "#2c6e9e", "#e1a23a", "#3f7f4f", "#6b4c9a", "#d9d2c5", "#2b2f36", "#c46a8a", "#4aa0a8", "#8a5a3c"];
+const snaps = [];                       // [{at, m: Map(id -> [id, kind, x, y, z, a, v, c])}]
+let clockOff = null, worldWs = null, viewSent = "";
+function connectWorld() {
+  const u = new URL("api/world", location.href);
+  u.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  worldWs = new WebSocket(u);
+  worldWs.onopen = () => { viewSent = ""; sendView(); };
+  worldWs.onmessage = (e) => {
+    const d = JSON.parse(e.data), off = d.at - Date.now() / 1000;
+    clockOff = clockOff == null ? off : Math.min(off, clockOff + 0.02);       // smallest delay seen, slowly forgiving
+    snaps.push({ at: d.at, m: new Map(d.a.map((a) => [a[0], a])) });
+    while (snaps.length > 4) snaps.shift();
+  };
+  worldWs.onclose = () => { worldWs = null; setTimeout(connectWorld, 3000); };
+}
+// the ground rectangle under the screen, in world metres
+function viewBox() {
+  const [r, d] = TN.man.axes, det = r[0] * d[1] - r[1] * d[0];
+  const v = TN.view, hw = innerWidth / 2 / v.s + 60, hh = innerHeight / 2 / v.s + 60;
+  const xs = [], ys = [];
+  for (const [sx, sy] of [[v.x - hw, v.y - hh], [v.x + hw, v.y - hh], [v.x - hw, v.y + hh], [v.x + hw, v.y + hh]]) {
+    const a = sx - r[2] * 10, b = sy - d[2] * 10;
+    xs.push((a * d[1] - b * r[1]) / det); ys.push((b * r[0] - a * d[0]) / det);
   }
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+function sendView() {
+  if (!worldWs || worldWs.readyState !== 1 || !TN.man) return;
+  const b = TN.view.s >= 0.9 || TN.playing ? viewBox() : { x0: 0, y0: 0, x1: 1e5, y1: 1e5 };   // zoomed out: nothing
+  const k = [b.x0, b.y0, b.x1, b.y1].map((x) => Math.round(x / 25)).join();
+  if (k !== viewSent) { viewSent = k; worldWs.send(JSON.stringify(b)); }
+}
+function inhabitants() {
+  if (snaps.length < 2 || clockOff == null) return [];
+  const rt = Date.now() / 1000 + clockOff - 0.3;
+  let i = snaps.length - 1;
+  while (i > 0 && snaps[i - 1].at > rt) i--;
+  const s0 = snaps[Math.max(0, i - 1)], s1 = snaps[i];
+  const f = s1.at > s0.at ? Math.max(0, Math.min(1.5, (rt - s0.at) / (s1.at - s0.at))) : 1;
+  const out = [];
+  for (const [id, b] of s1.m) {
+    const a = s0.m.get(id);
+    if (!a) { out.push(b); continue; }
+    let da = b[5] - a[5]; da = Math.atan2(Math.sin(da), Math.cos(da));
+    out.push([id, b[1], a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f, a[5] + da * f, b[6], b[7]]);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- occlusion (height tiles)
@@ -298,15 +336,35 @@ function delayText(d) {
   if (Math.abs(d) < 60) return "à l'heure";
   return d > 0 ? `retard ${Math.round(d / 60)} min` : `avance ${Math.round(-d / 60)} min`;
 }
-function carItems(t, rect) {
+function personModel(x, y, z, ang, col, walk, bike) {
+  const K = 1.9, ol = TN.view.s > 2 ? OUTLINE : null;            // a bit larger than life, or they'd vanish
+  shadow(x, y, z, ang, bike ? 1.8 : 0.6 * K, 0.5 * K);
+  if (bike) box(x, y, z + 0.35, ang, 1.7, 0.12, 0.5, "#2b2f36", "#2b2f36");
+  const lift = bike ? 0.55 : 0;
+  // legs swing while walking: two thin boxes
+  if (!bike) {
+    const sw = Math.sin(walk) * 0.18 * K, c = Math.cos(ang), s = Math.sin(ang);
+    for (const side of [-1, 1]) {
+      const ox = c * sw * side - s * 0.1 * K * side, oy = s * sw * side + c * 0.1 * K * side;
+      box(x + ox, y + oy, z, ang, 0.16 * K, 0.14 * K, 0.42 * K, "#2b2f36", "#3a3f46");
+    }
+  }
+  box(x, y, z + lift + 0.42 * K, ang, 0.34 * K, 0.42 * K, 0.5 * K, shade(col, 1.12), col, ol);         // body
+  box(x, y, z + lift + 0.92 * K, ang, 0.24 * K, 0.24 * K, 0.24 * K, "#f1c9a5", "#d9a982", ol);           // head
+}
+function inhabitantItems(t, rect) {
   const out = [];
-  if (TN.view.s < 1.0) return out;
-  for (const c of cars) {
-    const p = along(c.shape, (c.off + c.v * t) % c.shape.len);
-    p.x += Math.sin(p.ang) * 1.6; p.y -= Math.cos(p.ang) * 1.6;      // keep right of the section line
-    const [sx, sy] = project(p.x, p.y, p.z);
+  if (TN.view.s < 0.9 && !TN.playing) return out;
+  const now = performance.now() / 1000;
+  for (const [id, k, x, y, z, a, v, c] of inhabitants()) {
+    const [sx, sy] = project(x, y, z);
     if (!inRect(sx, sy, rect)) continue;
-    out.push({ sx, sy, h: 1.5, light: 1, draw: () => carModel(p.x, p.y, p.z, p.ang, c.color) });
+    const hit = { r: 10, open: () => live.open?.("agent", { id }) };
+    if (k === 0) out.push({ sx, sy, h: 1.5, light: 1, hit, draw: () => carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]) });
+    else if (TN.view.s >= 1.6 || TN.playing) {
+      const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;
+      out.push({ sx, sy, h: 2, hit, draw: () => personModel(x, y, z, a, col, phase, k === 2) });
+    }
   }
   return out;
 }
@@ -432,7 +490,7 @@ function frame() {
   let items = [];
   if (on) {
     items.push(...planeItems(t, visibleRect(4000)));
-    if (TN.view.s >= 0.6 || TN.playing) items.push(...transitItems(t, rect), ...trainItems(t, rect), ...carItems(t, rect));
+    if (TN.view.s >= 0.6 || TN.playing) items.push(...transitItems(t, rect), ...trainItems(t, rect), ...inhabitantItems(t, rect));
     items.push(...placeItems(t, rect), ...poiItems(t, rect));
   }
   for (const f of live.layers) items.push(...f(t, rect));
@@ -456,7 +514,7 @@ function frame() {
   live.lights = lights;
   for (const it of flat) { it.draw(); consider(it); }
   if (tip) label(tip[0], tip[1] - 20 * TN.dpr, tip[2]);
-  TN.liveStats = { vehicles: vehicles.length, cars: cars.length, planes: planes.length, trains: trains.length, drawn: world3d.length + flat.length };
+  TN.liveStats = { vehicles: vehicles.length, inhabitants: snaps.at(-1)?.m.size || 0, planes: planes.length, trains: trains.length, drawn: world3d.length + flat.length };
 }
 
 // a click on the map (from app.js): open whatever is under it
@@ -475,8 +533,9 @@ addEventListener("pointermove", (e) => { TN.pointer = [e.clientX, e.clientY]; })
 loadWorld().then(() => {
   pollVehicles(); setInterval(pollVehicles, 20_000);
   pollTraffic(); setInterval(pollTraffic, 180_000);
+  connectWorld(); setInterval(sendView, 300);
   pollEvents(); setInterval(pollEvents, 600_000);
-  pollPlanes(); setInterval(pollPlanes, 10_000);
+  pollPlanes(); setInterval(pollPlanes, 20_000);
   pollTrains(); setInterval(pollTrains, 30_000);
   pollMenus(); setInterval(pollMenus, 900_000);
   requestAnimationFrame(frame);

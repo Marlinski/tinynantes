@@ -49,6 +49,16 @@ live.open = async (kind, d) => {
       <h3>Prochains arrêts</h3><ol class="stops">${rows.map((s) => `<li><time>${hm(s.t)}</time>${esc(s.n)}</li>`).join("")}</ol>
       <p class="src">Horaires Naolib corrigés en temps réel (GTFS-RT)</p>`);
     if (near) $("boardBtn").onclick = () => action();
+  } else if (kind === "agent") {
+    let a = null;
+    try { a = await getJSON(`api/agent/${d.id}`); } catch { /* gone */ }
+    if (!a) return;
+    const icon = { car: "🚗", walker: "🚶", bike: "🚲" }[a.kind];
+    openSide(`<p class="kicker">${icon} Habitant·e</p><h2>${esc(a.name)}</h2><p>${esc(a.doing)}</p>
+      ${a.place ? `<p><a href="#" id="agentPlace">Voir le lieu</a></p>` : ""}
+      <p class="src">Simulé par le serveur : la circulation suit les comptages réels, les passants vont vers des lieux ouverts à cette heure.</p>`);
+    const pl = a.place && live.world.pois.find((p) => p.id === a.place);
+    if (pl) $("agentPlace").onclick = (e) => { e.preventDefault(); live.open("poi", pl); };
   } else if (kind === "train") {
     const m = d;
     openSide(`<p class="kicker">${esc(m.mode)} <b>${esc(m.number)}</b></p><h2>→ ${esc(m.headsign)}</h2>

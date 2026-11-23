@@ -441,10 +441,16 @@ def main(argv):
     out.mkdir(parents=True, exist_ok=True)
     c = Client()
     for i, j in zip(nums[0::2], nums[1::2]):
-        if (out / f"{i}_{j}.png").exists() and os.environ.get("G3D_FORCE") != "1":
+        hgt_only = os.environ.get("G3D_HGT_ONLY") == "1"      # backfill height maps, keep the render as is
+        if hgt_only and (out / f"{i}_{j}_hgt.png").exists():
+            continue
+        if not hgt_only and (out / f"{i}_{j}.png").exists() and os.environ.get("G3D_FORCE") != "1":
             continue
         img, rails, hgt = render_tile(i, j, geo.View(h), client=c)
         hgt.save(out / f"{i}_{j}_hgt.png")
+        if hgt_only:
+            print(f"{i}_{j} hgt", flush=True)
+            continue
         img.save(out / f"{i}_{j}.png")
         if rails is not None:
             rails.save(out / f"{i}_{j}_rails.png")

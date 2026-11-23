@@ -17,6 +17,7 @@ mod l93;
 mod planes;
 mod players;
 mod rt;
+mod sim;
 mod sncf;
 mod store;
 
@@ -146,6 +147,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(planes::run(app.http.clone(), app.origin, app.sky.clone(), store.clone()));
     tokio::spawn(places_loop(store.clone()));
     tokio::spawn(sncf_loop(app.clone()));
+    let web2 = web.clone();
+    let sim = tokio::task::spawn_blocking(move || sim::build(&web2)).await??;
+    let world = sim::World::new(sim);
+    tokio::spawn(sim::run(world.clone()));
+    tokio::spawn(sim_inputs(app.clone(), world.clone()));
 
     let api = Router::new()
         .route("/api/transit/vehicles", get(vehicles))
@@ -167,8 +173,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/ws", get(players::ws))
         .route("/api/chat/recent", get(players::recent))
         .with_state(players);
+    let living = Router::new()
+        .route("/api/world", get(world_ws))
+        .route("/api/agent/:id", get(agent))
+        .with_state(world);
     let router = api
         .merge(social)
+        .merge(living)
         .fallback_service(ServeDir::new(&web).append_index_html_on_directories(true))
         .layer(middleware::from_fn(cache_headers))
         .layer(CompressionLayer::new());
@@ -496,5 +507,80 @@ async fn places_loop(st: Arc<store::Store>) {
             _ => {}
         }
         tokio::time::sleep(Duration::from_secs(300)).await;
+    }
+}
+
+
+// ---------------------------------------------------------------- the simulated inhabitants
+
+/// Feed the simulation with the measured traffic and the weather, every minute.
+async fn sim_inputs(app: Arc<App>, w: Arc<sim::World>) {
+    loop {
+        let sections: Vec<sim::SectionIn> = app.traffic.read().await.value.as_ref()
+            .and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default();
+        let rain = app.weather.read().await.value.as_ref()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+            .and_then(|v| v["current"]["precipitation"].as_f64()).unwrap_or(0.0) as f32;
+        w.sim.write().await.set_inputs(&sim::Inputs { sections, rain });
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ViewMsg {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+/// GET /api/world (WebSocket): the client sends {"x0","y0","x1","y1"} (world metres) whenever its view changes,
+/// the server sends {"at": s, "a": [[id, kind, x, y, z, heading, speed, variant], ...]} 4 times a second for
+/// what lies inside. No sign-in needed: this is the city, not the players.
+async fn world_ws(up: axum::extract::ws::WebSocketUpgrade, State(w): State<Arc<sim::World>>) -> Response {
+    up.max_message_size(1024).on_upgrade(move |ws| world_conn(ws, w))
+}
+
+async fn world_conn(ws: axum::extract::ws::WebSocket, w: Arc<sim::World>) {
+    use axum::extract::ws::Message;
+    use futures_util::{SinkExt, StreamExt};
+    let (mut tx, mut rx) = ws.split();
+    let mut snap = w.snap.clone();
+    let mut view: Option<ViewMsg> = None;
+    loop {
+        tokio::select! {
+            m = rx.next() => match m {
+                Some(Ok(Message::Text(t))) => { if let Ok(v) = serde_json::from_str::<ViewMsg>(&t) { view = Some(v); } }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            },
+            r = snap.changed() => {
+                if r.is_err() { break; }
+                let Some(v) = &view else { continue };
+                let s = snap.borrow_and_update().clone();
+                // a view wider than ~4 km is a zoomed-out map: nothing is drawn then, send nothing
+                if v.x1 - v.x0 > 4000.0 || v.y1 - v.y0 > 4000.0 { continue; }
+                let mut out = String::with_capacity(16 * 1024);
+                out.push_str(&format!("{{\"at\":{:.2},\"a\":[", s.at));
+                let mut n = 0;
+                for &(id, k, x, y, z, a, sp, c) in &s.items {
+                    if x < v.x0 || x > v.x1 || y < v.y0 || y > v.y1 { continue; }
+                    if n > 0 { out.push(','); }
+                    out.push_str(&format!("[{id},{k},{x:.1},{y:.1},{z:.1},{a:.2},{sp:.1},{c}]"));
+                    n += 1;
+                    if n >= 5000 { break; }
+                }
+                out.push_str("]}");
+                if tx.send(Message::Text(out)).await.is_err() { break; }
+            }
+        }
+    }
+}
+
+/// GET /api/agent/:id -> who this inhabitant is and what they are doing
+async fn agent(State(w): State<Arc<sim::World>>, UrlPath(id): UrlPath<u32>) -> Response {
+    match w.sim.read().await.describe(id) {
+        Some(v) => json(Bytes::from(v.to_string())),
+        None => (StatusCode::NOT_FOUND, "{}").into_response(),
     }
 }

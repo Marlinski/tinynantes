@@ -188,10 +188,10 @@ fn s_nte_y(o: Origin) -> f64 {
 }
 
 pub async fn run(http: reqwest::Client, o: Origin, sky: Arc<RwLock<Sky>>, store: Arc<Store>) {
-    let mut wait = 10;
+    let mut wait = 20;
     loop {
         match refresh(&http, o, &sky, &store).await {
-            Ok(()) => wait = 10,
+            Ok(()) => wait = 20,
             Err(e) => {
                 tracing::warn!("planes: {e:#}");
                 sky.write().await.error = Some(format!("{e:#}"));

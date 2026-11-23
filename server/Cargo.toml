@@ -9,7 +9,7 @@ license = "MIT"
 anyhow = "1"
 argon2 = "0.5"
 futures-util = "0.3"
-rand = "0.8"
+rand = { version = "0.8", features = ["small_rng"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum = { version = "0.7", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
