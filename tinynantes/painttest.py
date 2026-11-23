@@ -89,20 +89,20 @@ if __name__ == "__main__":
     main(sys.argv[1:])
 
 
-def seam_test(h, tiles, variant="min9b", M=128, N=1024):
+def seam_test(h, tiles, variant="min9b", M=128, N=1024, src="r2"):
     """Paint each tile independently from its full render (tile + M px context), then blend the overlaps."""
     from concurrent.futures import ThreadPoolExecutor
     import numpy as np
     from .qa import fix_invented_water
     load_env()
-    d = OUT / "seam"
+    d = OUT / ("seam" if src == "r2" else f"seam_{src}")
     d.mkdir(parents=True, exist_ok=True)
 
     def one(t):
         i, j = t
         f = d / f"h{h}_{i}_{j}.png"
         if not f.exists():
-            paint(variant, Image.open(ROOT / "out" / "r2" / f"h{h}" / f"{i}_{j}.png").convert("RGB")).save(f)
+            paint(variant, Image.open(ROOT / "out" / src / f"h{h}" / f"{i}_{j}.png").convert("RGB")).save(f)
         return t
     list(ThreadPoolExecutor(4).map(one, tiles))
     i0, j0 = min(t[0] for t in tiles), min(t[1] for t in tiles)
@@ -115,11 +115,11 @@ def seam_test(h, tiles, variant="min9b", M=128, N=1024):
     wt = (ramp[:, None] * ramp[None, :])[..., None] + 1e-4
     for i, j in tiles:
         art = np.asarray(Image.open(d / f"h{h}_{i}_{j}.png").convert("RGB"))
-        ren = np.asarray(Image.open(ROOT / "out" / "r2" / f"h{h}" / f"{i}_{j}.png").convert("RGB"))
+        ren = np.asarray(Image.open(ROOT / "out" / src / f"h{h}" / f"{i}_{j}.png").convert("RGB"))
         art = fix_invented_water(art, ren).astype("f4")
         x, y = (i - i0) * N, (j - j0) * N
         acc[y:y + S, x:x + S] += art * wt
         wsum[y:y + S, x:x + S] += wt
     out = Image.fromarray(np.clip(acc / np.maximum(wsum, 1e-6), 0, 255).astype("u1")).crop((M, M, W - M, H - M))
-    out.save(OUT / f"seam_h{h}.png")
+    out.save(OUT / (f"seam_h{h}.png" if src == "r2" else f"seam_{src}_h{h}.png"))
     return out
