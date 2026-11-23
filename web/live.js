@@ -275,7 +275,35 @@ function visibleRect(margin = 40) {
 }
 
 // ---------------------------------------------------------------- per-frame items
-// ---------------------------------------------------------------- vehicle models
+// ---------------------------------------------------------------- painted sprites (tinynantes/sprites.py)
+// One sprite per vehicle and direction (16), rendered with the map's camera and repainted like the tiles.
+const sprites = { atlas: null, sheets: [] };
+async function loadSprites() {
+  try {
+    const a = await getJSON(`data/sprites/h${TN.H}/atlas.json`);
+    sprites.sheets = a.sheets.map((f) => { const im = new Image(); im.src = `data/sprites/h${TN.H}/${f}`; return im; });
+    sprites.atlas = a;
+  } catch { /* no sprites: box models */ }
+}
+const SPRITE_CARS = ["car_white_hatch", "car_black_sedan", "car_grey_suv", "car_red_hatch", "car_blue_sedan",
+  "car_silver_van", "car_green_hatch", "car_yellow_sedan"];
+// draw sprite `name` with its ground centre at world (x, y, z), heading ang; false if not available
+function sprite(name, x, y, z, ang) {
+  const A = sprites.atlas, e = A?.[name];
+  if (!e) return false;
+  const im = sprites.sheets[e.sheet];
+  if (!im?.complete || !im.naturalWidth) return false;
+  const k = ((Math.round(ang / (2 * Math.PI) * A.dirs) % A.dirs) + A.dirs) % A.dirs;
+  const [cx, cy, w, h, ax, ay] = e.cells[k];
+  const sc = TN.view.s * TN.dpr / e.ppm;
+  const [X, Y] = toCanvas(...project(x, y, z));
+  ctx.imageSmoothingEnabled = sc < 1;
+  ctx.drawImage(im, cx, cy, w, h, X - ax * sc, Y - ay * sc, w * sc, h * sc);
+  ctx.imageSmoothingEnabled = true;
+  return true;
+}
+
+// ---------------------------------------------------------------- vehicle models (fallback when no sprite)
 // Small stacked boxes read as vehicles at this scale: a ground shadow, a body, a glass band, a roof.
 const GLASS = "#33414d", OUTLINE = "rgba(18,22,26,.7)";
 function shadow(x, y, z, ang, L, W) {
@@ -318,15 +346,17 @@ function transitItems(t, rect) {
       for (let k = 0; k < 4; k++) {
         const q = segs[k];
         const [qx, qy] = project(q.x, q.y, q.z);
-        out.push({ sx: qx, sy: qy, h: 3.3, light: 2, draw: () => coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color),
+        out.push({ sx: qx, sy: qy, h: 3.3, light: 2, draw: () => {
+                     if (!sprite(k === 0 ? "tram_head" : "tram_mid", q.x, q.y, q.z, q.ang)) coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color); },
                    hit: k === 0 ? hit : null, tip: k === 0 ? tip : null });
       }
     } else if (r.type === 4) {
       out.push({ sx, sy, h: 2.5, draw: () => { shadow(p.x, p.y, p.z, p.ang, 18, 5);
+        if (sprite("navibus", p.x, p.y, p.z, p.ang)) return;
         box(p.x, p.y, p.z, p.ang, 18, 5, 1.0, "#f4f1ea", "#2c5d8a", OUTLINE);                     // hull
         box(p.x, p.y, p.z + 1.0, p.ang, 9, 3.6, 1.6, "#ffffff", GLASS, OUTLINE); }, hit, tip }); // cabin
     } else {
-      out.push({ sx, sy, h: 3.0, light: 2, draw: () => { shadow(p.x, p.y, p.z, p.ang, 12, 2.55); coach(p.x, p.y, p.z, p.ang, 12, 2.55, 3.0, color); }, hit, tip });
+      out.push({ sx, sy, h: 3.0, light: 2, draw: () => { shadow(p.x, p.y, p.z, p.ang, 12, 2.55); if (!sprite("bus", p.x, p.y, p.z, p.ang)) coach(p.x, p.y, p.z, p.ang, 12, 2.55, 3.0, color); }, hit, tip });
     }
   }
   return out;
@@ -360,7 +390,9 @@ function inhabitantItems(t, rect) {
     const [sx, sy] = project(x, y, z);
     if (!inRect(sx, sy, rect)) continue;
     const hit = { r: 10, open: () => live.open?.("agent", { id }) };
-    if (k === 0) out.push({ sx, sy, h: 1.5, light: 1, hit, draw: () => carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]) });
+    if (k === 0) out.push({ sx, sy, h: 1.5, light: 1, hit, draw: () => {
+      shadow(x, y, z, a, 4.3, 1.8);
+      if (!sprite(SPRITE_CARS[c % SPRITE_CARS.length], x, y, z, a)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
     else if (TN.view.s >= 1.6 || TN.playing) {
       const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;
       out.push({ sx, sy, h: 2, hit, draw: () => personModel(x, y, z, a, col, phase, k === 2) });
@@ -531,6 +563,7 @@ TN.click = (x, y) => {
 // ---------------------------------------------------------------- start
 addEventListener("pointermove", (e) => { TN.pointer = [e.clientX, e.clientY]; });
 loadWorld().then(() => {
+  loadSprites();
   pollVehicles(); setInterval(pollVehicles, 20_000);
   pollTraffic(); setInterval(pollTraffic, 180_000);
   connectWorld(); setInterval(sendView, 300);
