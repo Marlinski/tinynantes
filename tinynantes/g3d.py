@@ -97,7 +97,7 @@ class Client:
         self.calls += 1
         data = r.content
         f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(f.suffix + ".tmp"); tmp.write_bytes(data); tmp.replace(f)
+        tmp = f.with_suffix(f"{f.suffix}.{os.getpid()}.{threading.get_ident()}.tmp"); tmp.write_bytes(data); tmp.replace(f)
         return data
 
     def root(self):
