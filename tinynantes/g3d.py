@@ -415,6 +415,8 @@ def main(argv):
     out.mkdir(parents=True, exist_ok=True)
     c = Client()
     for i, j in zip(nums[0::2], nums[1::2]):
+        if (out / f"{i}_{j}.png").exists() and os.environ.get("G3D_FORCE") != "1":
+            continue
         img, rails = render_tile(i, j, geo.View(h), client=c)
         img.save(out / f"{i}_{j}.png")
         if rails is not None:

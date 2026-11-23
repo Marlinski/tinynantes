@@ -61,8 +61,15 @@ def places():
 
 
 def main():
+    import sys
+    only = None
+    if "--headings" in sys.argv:            # e.g. --headings 0  or  --headings 0,2
+        only = {int(x) for x in sys.argv[sys.argv.index("--headings") + 1].split(",")}
     heads = []
     for h in range(8):
+        if only is not None and h not in only:
+            shutil.rmtree(DATA / f"h{h}", ignore_errors=True)
+            continue
         art = ROOT / "out" / f"h{h}" / "art"
         tiles = geo.View(h).tiles_for_area()
         done = sum((art / f"{i}_{j}.png").exists() for i, j in tiles)
