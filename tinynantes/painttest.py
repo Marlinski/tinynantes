@@ -34,6 +34,9 @@ VARIANTS = {
     "min9b": ("fal-ai/flux-2/klein/9b/edit", {"prompt": (
         "Repaint this 3D map render as a detailed isometric pixel-art city map, keeping every road, rail track, "
         "building, roof colour, tree and body of water exactly in place. Add nothing.")}),
+    "g9b": ("fal-ai/flux-2/klein/9b/edit", {"prompt": (
+        "Repaint this 3D city render as a detailed isometric pixel-art city map. Keep every street, building, "
+        "roof colour, tree and body of water exactly where it is. Do not add or remove anything.")}),
     "fastcello06": ("fal-ai/flux-2/klein/4b/edit/lora", {
         "prompt": "Repaint this 3D map render as mgwarm warm pixel-art map, keeping every road, building and tree in place",
         "loras": [{"path": HF.format("fastcello-flux2-klein-4b"), "scale": 0.6}],

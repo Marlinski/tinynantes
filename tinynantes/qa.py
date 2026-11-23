@@ -36,9 +36,11 @@ def invented_water(h: int, i: int, j: int):
 
 
 def invented_water_arrays(art: np.ndarray, ren: np.ndarray):
-    """(pixel count, mask) of drawn water far from any render water; both arrays are the 1024 px core."""
+    """(pixel count, mask) of drawn water far from any render water. `ren` is the render (water is a flat blue)
+    or directly a bool mask of where real water is."""
     aw = ndimage.binary_opening(water_mask(art, True), iterations=2)
-    rw = ndimage.binary_dilation(water_mask(ren, False), iterations=24)   # tolerate shoreline drift
+    real = ren if ren.dtype == bool else water_mask(ren, False)
+    rw = ndimage.binary_dilation(real, iterations=24)   # tolerate shoreline drift
     bad = aw & ~rw
     lab, n = ndimage.label(bad)
     if not n:
@@ -82,9 +84,11 @@ if __name__ == "__main__":
     main()
 
 
-def fix_invented_water(art: np.ndarray, ren: np.ndarray) -> np.ndarray:
-    """Deterministic repair: drawn water with no water under it in the render becomes mown grass
-    (the usual culprit is a sports pitch). White markings are not blue, so they survive."""
+def fix_invented_water(art: np.ndarray, ren: np.ndarray, src: np.ndarray | None = None) -> np.ndarray:
+    """Deterministic repair of drawn water with no water under it (the usual culprit is a sports pitch).
+    `ren`: render or real-water bool mask (see invented_water_arrays). With `src` (the photographic render the
+    art was painted from), blue things that are blue in the photo too (glass roofs, real pools) are kept, and
+    the invented water takes the photo's colours; otherwise it becomes mown grass."""
     _, mask = invented_water_arrays(art, ren)
     if not mask.any():
         return art
@@ -92,8 +96,15 @@ def fix_invented_water(art: np.ndarray, ren: np.ndarray) -> np.ndarray:
     bluish = (bl > r * 1.12) & (bl > g * 0.95)
     mask = ndimage.binary_dilation(mask, iterations=10) & bluish | mask
     a = art.astype("f4")
-    lum = a.mean(-1, keepdims=True) / 255.0
-    grass = np.array([96, 152, 66], "f4") * (0.75 + 0.5 * lum)
+    if src is not None:
+        s = src.astype("f4")
+        src_blue = ndimage.binary_dilation((s[..., 2] > s[..., 0] * 1.15) & (s[..., 2] > s[..., 1] * 1.0), iterations=3)
+        mask &= ~src_blue
+        fill = ndimage.median_filter(s, size=(5, 5, 1))
+        fill = (fill.mean(-1, keepdims=True) + (fill - fill.mean(-1, keepdims=True)) * 1.3)   # a bit more saturated
+    else:
+        lum = a.mean(-1, keepdims=True) / 255.0
+        fill = np.broadcast_to(np.array([96, 152, 66], "f4") * (0.75 + 0.5 * lum), a.shape)
     out = a.copy()
-    out[mask] = grass[mask]
+    out[mask] = fill[mask]
     return np.clip(out, 0, 255).astype("u1")

@@ -305,3 +305,29 @@ def main(argv):
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
+
+def water_mask(i, j, view=geo.View(0), margin_px=128):
+    """Where real water (BD TOPO hydrography, at terrain height) lands on the tile render, as a bool image
+    the size of the render. Occlusion is ignored: the mask only says where water is allowed."""
+    from scipy import ndimage
+    from . import ign
+    T = geo.TILE_M
+    mm = margin_px * geo.M_PER_PX
+    pad = 4.0 + mm
+    bbox = view.ground_bbox(i * T - pad, j * T - pad, (i + 1) * T + pad, (j + 1) * T + pad)
+    eau, (gx0, gy1), res = ign.mosaic("eau", bbox)
+    mnt, _, _ = ign.mosaic("mnt", bbox)
+    rr, cc = np.nonzero(eau > 0)
+    size = geo.TILE_PX + 2 * margin_px
+    out = np.zeros((size, size), bool)
+    if not len(rr):
+        return out
+    x = gx0 - geo.ORIGIN[0] + (cc + 0.5) * res
+    y = gy1 - geo.ORIGIN[1] - (rr + 0.5) * res
+    sx, sy, _ = view.to_screen(x, y, mnt[rr, cc])
+    px = ((sx - i * T + mm) / geo.M_PER_PX).astype(int)
+    py = ((sy - j * T + mm) / geo.M_PER_PX).astype(int)
+    k = (px >= 0) & (px < size) & (py >= 0) & (py < size)
+    out[py[k], px[k]] = True
+    return ndimage.binary_closing(ndimage.binary_dilation(out, iterations=2), iterations=3)
