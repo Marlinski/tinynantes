@@ -266,6 +266,16 @@ void main() { f_color = vec4(v_c, 1.0); }
 """
 
 
+def overlay_rails(art, rails):
+    """Put the rail layer (RGBA, from render_tile) back over a painted tile: the painter tends to turn
+    tram platforms into roads."""
+    if rails is None:
+        return art
+    r = np.asarray(rails, "f4")
+    a = r[..., 3:] / 255.0 * 0.9
+    return np.clip(np.asarray(art, "f4") * (1 - a) + r[..., :3] * a, 0, 255).astype("u1")
+
+
 @lru_cache(maxsize=1)
 def _ctx():
     ctx = moderngl.create_standalone_context(backend="egl")
@@ -312,9 +322,14 @@ def rail_mesh(bbox):
             c = _offset(p, (k - (ntr - 1) / 2) * (3.4 if tram else 4.5))
             z = z_at(c)
             strip(_offset(c, -1.5 if tram else -1.7), _offset(c, 1.5 if tram else 1.7), z,
-                  (0.55, 0.55, 0.53) if tram else (0.47, 0.42, 0.36))                               # bed / ballast
+                  (0.62, 0.60, 0.55) if tram else (0.47, 0.42, 0.36))                               # bed / ballast
             for side in (-0.72, 0.72):
-                strip(_offset(c, side - 0.08), _offset(c, side + 0.08), z, (0.82, 0.82, 0.85), 0.05)   # rails
+                if tram:   # embedded grooved rails: two dark lines on the platform
+                    strip(_offset(c, side - 0.14), _offset(c, side + 0.14), z, (0.16, 0.16, 0.18), 0.05)
+                else:
+                    strip(_offset(c, side - 0.08), _offset(c, side + 0.08), z, (0.82, 0.82, 0.85), 0.05)
+            if tram:
+                continue
             # sleepers every 0.65 m
             tan = np.gradient(c, axis=0); tan /= np.maximum(np.linalg.norm(tan, axis=1, keepdims=True), 1e-9)
             nrm = np.column_stack([-tan[:, 1], tan[:, 0]])
@@ -351,9 +366,10 @@ def render_tile(i, j, view=geo.View(0), margin_px=128, client=None):
         pr["u_view"].value = (cx, cy, T / 2 + mm, float(gx * bk[0] + gy * bk[1] + 10.0 * bk[2]))
     size = geo.TILE_PX + 2 * margin_px
     n = size * SS
-    fbo = ctx.simple_framebuffer((n, n), components=3)
-    fbo.use(); ctx.enable(moderngl.DEPTH_TEST); fbo.clear(0.55, 0.62, 0.66, 1.0)
-    objs = [fbo]
+    depth = ctx.depth_renderbuffer((n, n))
+    col = ctx.renderbuffer((n, n), 3)
+    fbo = ctx.framebuffer([col], depth)
+    fbo.use(); ctx.enable(moderngl.DEPTH_TEST); ctx.depth_func = "<"; fbo.clear(0.55, 0.62, 0.66, 1.0)
     for data in blobs:
         for p, uv, faces, tex in load_glb(data):
             loc = ecef_to_local(p).astype("f4")
@@ -366,18 +382,28 @@ def render_tile(i, j, view=geo.View(0), margin_px=128, client=None):
             vao.render(moderngl.TRIANGLES)
             for o in (vao, vbo, ibo, t):
                 o.release()
-    if RAILS:
-        rm = rail_mesh((bx0, by0, bx1, by1))
-        if rm is not None:
-            vbo = ctx.buffer(rm[0].tobytes()); ibo = ctx.buffer(rm[1].tobytes())
-            vao = ctx.vertex_array(cprog, [(vbo, "3f 3f", "in_p", "in_c")], ibo)
-            vao.render(moderngl.TRIANGLES)
-            for o in (vao, vbo, ibo):
-                o.release()
+    rails = None
+    rm = rail_mesh((bx0, by0, bx1, by1)) if RAILS else None
+    if rm is not None:
+        vbo = ctx.buffer(rm[0].tobytes()); ibo = ctx.buffer(rm[1].tobytes())
+        vao = ctx.vertex_array(cprog, [(vbo, "3f 3f", "in_p", "in_c")], ibo)
+        vao.render(moderngl.TRIANGLES)
+        # the visible rail pixels again, alone on a transparent layer (same depth buffer: hidden parts stay hidden)
+        layer = ctx.texture((n, n), 4); layer.write(bytes(n * n * 4))
+        fbo2 = ctx.framebuffer([layer], depth)
+        fbo2.use(); ctx.depth_func = "<="
+        vao.render(moderngl.TRIANGLES)
+        rails = Image.frombytes("RGBA", (n, n), fbo2.read(components=4)).transpose(Image.FLIP_TOP_BOTTOM)
+        rails = rails.resize((size, size), Image.LANCZOS)
+        for o in (vao, vbo, ibo, fbo2, layer):
+            o.release()
+        ctx.depth_func = "<"
+    fbo.use()
     img = Image.frombytes("RGB", (n, n), fbo.read(components=3)).transpose(Image.FLIP_TOP_BOTTOM)
-    fbo.release()
+    for o in (fbo, col, depth):
+        o.release()
     print(f"{len(uris)} glb, {client.calls} API calls", flush=True)
-    return img.resize((size, size), Image.LANCZOS)
+    return img.resize((size, size), Image.LANCZOS), rails
 
 
 def main(argv):
@@ -387,7 +413,10 @@ def main(argv):
     out.mkdir(parents=True, exist_ok=True)
     c = Client()
     for i, j in zip(nums[0::2], nums[1::2]):
-        render_tile(i, j, geo.View(h), client=c).save(out / f"{i}_{j}.png")
+        img, rails = render_tile(i, j, geo.View(h), client=c)
+        img.save(out / f"{i}_{j}.png")
+        if rails is not None:
+            rails.save(out / f"{i}_{j}_rails.png")
         print(f"{i}_{j}", flush=True)
 
 
