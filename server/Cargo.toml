@@ -1,0 +1,30 @@
+[package]
+name = "tinynantes-server"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny Nantes backend: serves the site and tiles, and caches the city's live feeds (transit, traffic, events)"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+futures-util = "0.3"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+axum = { version = "0.7", features = ["ws"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+csv = "1"
+prost = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "compression-gzip", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

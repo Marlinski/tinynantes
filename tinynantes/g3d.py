@@ -402,10 +402,36 @@ def render_tile(i, j, view=geo.View(0), margin_px=128, client=None):
         ctx.depth_func = "<"
     fbo.use()
     img = Image.frombytes("RGB", (n, n), fbo.read(components=3)).transpose(Image.FLIP_TOP_BOTTOM)
+    zbuf = np.frombuffer(fbo.read(components=1, attachment=-1, dtype="f4"), "f4").reshape(n, n)[::-1]
+    hgt = _height_map(zbuf, view, cx, cy, T / 2 + mm, float(gx * bk[0] + gy * bk[1] + 10.0 * bk[2]),
+                      (bx0, by0, bx1, by1), size)
     for o in (fbo, col, depth):
         o.release()
     print(f"{len(uris)} glb, {client.calls} API calls", flush=True)
-    return img.resize((size, size), Image.LANCZOS), rails
+    return img.resize((size, size), Image.LANCZOS), rails, hgt
+
+
+def _height_map(zbuf, view, cx, cy, half, w, bbox, size):
+    """Height above the terrain of the visible surface at every pixel (u8, 0.5 m steps; 0 = ground/sky).
+    The viewer uses it to hide sprites behind buildings: a pixel occludes a sprite whose foot is higher on
+    screen than the pixel's own foot (sy + height * cos 45)."""
+    from . import ign
+    n = zbuf.shape[0]
+    r, dn, bk = view.axes
+    t = (np.arange(n) + 0.5) / n * 2 - 1
+    SX = cx + t[None, :] * half
+    SY = cy - half + (np.arange(n)[:, None] + 0.5) / n * 2 * half
+    DP = w - (2 * zbuf - 1) * 1500.0
+    P = SX[..., None] * r + SY[..., None] * dn + DP[..., None] * bk
+    mnt, (gx0, gy1), res = ign.mosaic("mnt", bbox)
+    c = np.clip(((P[..., 0] + geo.ORIGIN[0] - gx0) / res).astype(int), 0, mnt.shape[1] - 1)
+    rr = np.clip(((gy1 - P[..., 1] - geo.ORIGIN[1]) / res).astype(int), 0, mnt.shape[0] - 1)
+    h = np.where(zbuf < 0.9999, P[..., 2] - mnt[rr, c], 0)
+    q = np.clip(np.round(h * 2), 0, 255).astype("u1")
+    k = n // size
+    q = q.reshape(size, k, size, k).max(axis=(1, 3))          # conservative: keep the tallest sub-pixel
+    q[q < 4] = 0                                              # < 2 m: ground clutter, cars, low walls
+    return Image.fromarray(q, "L")
 
 
 def main(argv):
@@ -417,7 +443,8 @@ def main(argv):
     for i, j in zip(nums[0::2], nums[1::2]):
         if (out / f"{i}_{j}.png").exists() and os.environ.get("G3D_FORCE") != "1":
             continue
-        img, rails = render_tile(i, j, geo.View(h), client=c)
+        img, rails, hgt = render_tile(i, j, geo.View(h), client=c)
+        hgt.save(out / f"{i}_{j}_hgt.png")
         img.save(out / f"{i}_{j}.png")
         if rails is not None:
             rails.save(out / f"{i}_{j}_rails.png")

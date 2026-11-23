@@ -7,6 +7,7 @@ dependencies = [
     "fal-client>=1.0.3",
     "moderngl>=5.13.0",
     "numpy>=2.5.5",
+    "osmium>=4.3.2",
     "pillow>=13.0.0",
     "pygltflib>=1.16.5",
     "pyproj>=3.8.0",

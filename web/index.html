@@ -14,6 +14,7 @@
 </head>
 <body>
 <canvas id="map" aria-label="Carte isométrique de Nantes. Glisser pour se déplacer, molette ou pincer pour zoomer."></canvas>
+<canvas id="live" aria-hidden="true"></canvas>
 <div id="tilt" aria-hidden="true"><div class="band top"></div><div class="band bottom"></div></div>
 <canvas id="labels" aria-hidden="true"></canvas>
 
@@ -39,6 +40,7 @@
   <hr>
   <button id="tiltBtn" title="Effet tilt-shift (D)" aria-pressed="true">◎</button>
   <button id="labelsBtn" title="Lieux (L)" aria-pressed="true">⚑</button>
+  <button id="liveBtn" title="En direct : trams, bus, trafic, événements" aria-pressed="true">◉</button>
   <button id="share" title="Partager cette vue">⇪</button>
   <button id="info" title="À propos">i</button>
 </nav>
@@ -51,10 +53,12 @@
   <p>Nantes en pixel art isométrique. Glisser pour se déplacer, molette ou pincer pour zoomer.</p>
   <p>Relief et bâti : LiDAR HD, BD TOPO et BD ORTHO de l'IGN (Licence Ouverte), mis en volume puis redessinés tuile par tuile par un modèle d'image (FLUX.2 klein).</p>
   <p>Inspiré par <a href="https://tinylasvegas.com" target="_blank" rel="noopener">tinylasvegas.com</a> et <a href="https://tinyrj.com" target="_blank" rel="noopener">tinyrj.com</a>.</p>
-  <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN</p>
+  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; agenda de la Ville de Nantes.</p>
+  <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN · Naolib, Nantes Métropole (ODbL) · © contributeurs OpenStreetMap (ODbL)</p>
 </aside>
 <div id="toast" class="toast" hidden></div>
 <div class="credit-badge">© IGN</div>
 <script src="app.js" type="module"></script>
+<script src="live.js" type="module"></script>
 </body>
 </html>

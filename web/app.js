@@ -17,6 +17,8 @@ let marker = null;                      // { x, y, name }
 let showLabels = true;
 const cache = new Map();                // "L/i_j" -> { img, ready }
 let dirty = true;
+// shared with live.js (animated layer)
+window.TN = { view, get man() { return man; }, get dpr() { return dpr; }, get H() { return H; }, pointer: null };
 
 // ---------------------------------------------------------------- loading
 async function loadManifest(h) {
@@ -302,6 +304,7 @@ function toggleLabels() {
   b.setAttribute("aria-pressed", showLabels); dirty = true;
 }
 $("tiltBtn").onclick = toggleTilt;
+$("liveBtn").onclick = () => { const b = $("liveBtn"); b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") !== "true"); };
 $("labelsBtn").onclick = toggleLabels;
 $("share").onclick = async () => {
   writeHash();
