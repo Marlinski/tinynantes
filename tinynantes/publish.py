@@ -8,6 +8,7 @@ Usage: uv run python -m tinynantes.publish
 from __future__ import annotations
 
 import json
+import shutil
 import math
 from pathlib import Path
 
@@ -63,9 +64,15 @@ def main():
     heads = []
     for h in range(8):
         art = ROOT / "out" / f"h{h}" / "art"
-        if art.exists() and any(art.glob("*.png")):
-            publish_heading(h, art, DATA / f"h{h}")
-            heads.append(h)
+        tiles = geo.View(h).tiles_for_area()
+        done = sum((art / f"{i}_{j}.png").exists() for i, j in tiles)
+        if done < len(tiles):   # a half-drawn heading would show holes: skip it until complete
+            if done:
+                print(f"h{h}: {done}/{len(tiles)} tiles drawn, not published")
+            shutil.rmtree(DATA / f"h{h}", ignore_errors=True)
+            continue
+        publish_heading(h, art, DATA / f"h{h}")
+        heads.append(h)
     (DATA / "headings.json").write_text(json.dumps(heads))
     (DATA / "places.json").write_text(json.dumps(places(), ensure_ascii=False))
 

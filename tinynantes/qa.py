@@ -80,3 +80,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def fix_invented_water(art: np.ndarray, ren: np.ndarray) -> np.ndarray:
+    """Deterministic repair: drawn water with no water under it in the render becomes mown grass
+    (the usual culprit is a sports pitch). White markings are not blue, so they survive."""
+    _, mask = invented_water_arrays(art, ren)
+    if not mask.any():
+        return art
+    r, g, bl = (art[..., k].astype("f4") for k in range(3))
+    bluish = (bl > r * 1.12) & (bl > g * 0.95)
+    mask = ndimage.binary_dilation(mask, iterations=10) & bluish | mask
+    a = art.astype("f4")
+    lum = a.mean(-1, keepdims=True) / 255.0
+    grass = np.array([96, 152, 66], "f4") * (0.75 + 0.5 * lum)
+    out = a.copy()
+    out[mask] = grass[mask]
+    return np.clip(out, 0, 255).astype("u1")

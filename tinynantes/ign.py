@@ -210,3 +210,84 @@ def rails(bbox):
                 if key not in seen:
                     seen.add(key); out.append(r)
     return out
+
+
+def _wfs_all(typename, bbox):
+    x0, y0, x1, y1 = bbox
+    feats, start = [], 0
+    while True:
+        raw = _get(WFS, {
+            "SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
+            "TYPENAMES": typename, "SRSNAME": "EPSG:2154",
+            "BBOX": f"{x0},{y0},{x1},{y1},EPSG:2154", "OUTPUTFORMAT": "application/json",
+            "COUNT": 5000, "STARTINDEX": start,
+        })
+        page = json.loads(raw)["features"]
+        feats += page
+        if len(page) < 5000:
+            return feats
+        start += 5000
+
+
+def _building_chunk(cx, cy):
+    """BD TOPO building footprints touching one chunk (rings + useful attributes), cached as JSON."""
+    d = CACHE / "bati_vec"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{cx}_{cy}.json"
+    if not f.exists():
+        x0, y0 = cx * CHUNK, cy * CHUNK
+        out = []
+        for ft in _wfs_all("BDTOPO_V3:batiment", (x0, y0, x0 + CHUNK, y0 + CHUNK)):
+            p, g = ft["properties"], ft.get("geometry") or {}
+            polys = g["coordinates"] if g.get("type") == "MultiPolygon" else [g.get("coordinates") or []]
+            for k, poly in enumerate(polys):
+                out.append({
+                    "id": f'{p.get("cleabs")}#{k}',
+                    "rings": [[[round(c[0], 2), round(c[1], 2)] for c in ring] for ring in poly],
+                    "floors": p.get("nombre_d_etages"), "height": p.get("hauteur"),
+                    "roof": p.get("materiaux_de_la_toiture"), "walls": p.get("materiaux_des_murs"),
+                    "usage": p.get("usage_1"), "nature": p.get("nature"),
+                    "light": bool(p.get("construction_legere")), "year": (p.get("date_d_apparition") or "")[:4],
+                })
+        f.write_text(json.dumps(out))
+    return json.loads(f.read_text())
+
+
+def buildings(bbox):
+    """Building footprint polygons (deduplicated) for every chunk under bbox."""
+    seen, out = set(), []
+    for cx in range(math.floor(bbox[0] / CHUNK), math.floor((bbox[2] - 1e-6) / CHUNK) + 1):
+        for cy in range(math.floor(bbox[1] / CHUNK), math.floor((bbox[3] - 1e-6) / CHUNK) + 1):
+            for b in _building_chunk(cx, cy):
+                if b["id"] not in seen:
+                    seen.add(b["id"]); out.append(b)
+    return out
+
+
+def _sport_chunk(cx, cy):
+    """BD TOPO sports grounds touching one chunk, cached as JSON."""
+    d = CACHE / "sport"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{cx}_{cy}.json"
+    if not f.exists():
+        x0, y0 = cx * CHUNK, cy * CHUNK
+        out = []
+        for ft in _wfs_all("BDTOPO_V3:terrain_de_sport", (x0, y0, x0 + CHUNK, y0 + CHUNK)):
+            p, g = ft["properties"], ft.get("geometry") or {}
+            polys = g["coordinates"] if g.get("type") == "MultiPolygon" else [g.get("coordinates") or []]
+            for k, poly in enumerate(polys):
+                out.append({"id": f'{p.get("cleabs")}#{k}', "nature": p.get("nature"),
+                            "detail": p.get("nature_detaillee"),
+                            "rings": [[[round(c[0], 2), round(c[1], 2)] for c in ring] for ring in poly]})
+        f.write_text(json.dumps(out))
+    return json.loads(f.read_text())
+
+
+def sports(bbox):
+    seen, out = set(), []
+    for cx in range(math.floor(bbox[0] / CHUNK), math.floor((bbox[2] - 1e-6) / CHUNK) + 1):
+        for cy in range(math.floor(bbox[1] / CHUNK), math.floor((bbox[3] - 1e-6) / CHUNK) + 1):
+            for s in _sport_chunk(cx, cy):
+                if s["id"] not in seen:
+                    seen.add(s["id"]); out.append(s)
+    return out
