@@ -39,6 +39,7 @@ use tokio::sync::RwLock;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 
+const WEATHER_URL: &str = "https://api.open-meteo.com/v1/forecast?latitude=47.218&longitude=-1.553&current=temperature_2m,precipitation,rain,snowfall,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,is_day,visibility&daily=sunrise,sunset&timezone=Europe%2FParis&forecast_days=1";
 const RT_URL: &str = "https://api.okina.fr/gateway/semgtfsrt/realtime/trip-updates/NAOLIBORG";
 const USER_AGENT: &str = concat!("tinynantes-server/", env!("CARGO_PKG_VERSION"));
 
@@ -85,6 +86,7 @@ struct App {
     rt: RwLock<Cached<Realtime>>,
     traffic: RwLock<Cached<Bytes>>,
     events: RwLock<Cached<Bytes>>,
+    weather: RwLock<Cached<Bytes>>,
     vehicles: RwLock<(i64, Bytes)>,
     sky: Arc<RwLock<planes::Sky>>,
     sncf: RwLock<Cached<Arc<sncf::Day>>>,
@@ -117,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
         }
         RwLock::new(c)
     };
-    let (traffic0, events0) = (restore("traffic"), restore("events"));
+    let (traffic0, events0, weather0) = (restore("traffic"), restore("events"), restore("weather"));
     let app = Arc::new(App {
         store: store.clone(),
         http,
@@ -128,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         rt: Default::default(),
         traffic: traffic0,
         events: events0,
+        weather: weather0,
         vehicles: RwLock::new((0, Bytes::new())),
         sky: Default::default(),
         sncf: Default::default(),
@@ -139,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(rt_loop(app.clone()));
     tokio::spawn(every(app.clone(), 180, |a| Box::pin(refresh_traffic(a))));
     tokio::spawn(every(app.clone(), 3600, |a| Box::pin(refresh_events(a))));
+    tokio::spawn(every(app.clone(), 600, |a| Box::pin(refresh_weather(a))));
     tokio::spawn(planes::run(app.http.clone(), app.origin, app.sky.clone(), store.clone()));
     tokio::spawn(places_loop(store.clone()));
     tokio::spawn(sncf_loop(app.clone()));
@@ -147,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/transit/vehicles", get(vehicles))
         .route("/api/traffic", get(traffic))
         .route("/api/events", get(events))
+        .route("/api/weather", get(weather))
         .route("/api/status", get(status))
         .route("/api/planes", get(planes_h))
         .route("/api/airport", get(airport))
@@ -276,6 +281,23 @@ async fn refresh_events(app: Arc<App>) {
     app.events.write().await.set(r);
 }
 
+/// Current weather in Nantes (Open-Meteo, CC BY 4.0), every 10 min: drives the viewer's rain, fog, clouds...
+async fn refresh_weather(app: Arc<App>) {
+    let r = async {
+        let b = app.http.get(WEATHER_URL).send().await?.error_for_status()?.bytes().await?;
+        serde_json::from_slice::<serde_json::Value>(&b)?; // must be JSON
+        anyhow::Ok(b)
+    }
+    .await;
+    if let Err(e) = &r {
+        tracing::warn!("weather: {e:#}");
+    }
+    if let Ok(b) = &r {
+        app.store.save_feed("weather", now(), b);
+    }
+    app.weather.write().await.set(r);
+}
+
 // ---------------------------------------------------------------- handlers
 
 fn json(b: Bytes) -> Response {
@@ -302,6 +324,10 @@ async fn traffic(State(app): State<Arc<App>>) -> Response {
 
 async fn events(State(app): State<Arc<App>>) -> Response {
     wrapped(&app.events).await
+}
+
+async fn weather(State(app): State<Arc<App>>) -> Response {
+    wrapped(&app.weather).await
 }
 
 #[derive(Serialize)]

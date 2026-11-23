@@ -21,7 +21,9 @@ let hits = [];                                // clickable things drawn this fra
 
 export const live = {
   world, project, toCanvas, zAt, along, vehiclePose, occluded, box, label, shade,
-  get vehicles() { return vehicles; }, get menus() { return menus; }, now: () => Date.now() / 1000 + clockSkew,
+  get vehicles() { return vehicles; }, get menus() { return menus; }, get sections() { return sections; },
+  lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
+  now: () => Date.now() / 1000 + clockSkew,
   layers: [],                                 // functions (t) -> items, added by game.js
   open: null,                                 // set by game.js: open(kind, data) shows the side panel
 };
@@ -278,7 +280,7 @@ function transitItems(t, rect) {
       for (let k = 0; k < 4; k++) {
         const q = segs[k];
         const [qx, qy] = project(q.x, q.y, q.z);
-        out.push({ sx: qx, sy: qy, h: 3.3, draw: () => coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color),
+        out.push({ sx: qx, sy: qy, h: 3.3, light: 2, draw: () => coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color),
                    hit: k === 0 ? hit : null, tip: k === 0 ? tip : null });
       }
     } else if (r.type === 4) {
@@ -286,7 +288,7 @@ function transitItems(t, rect) {
         box(p.x, p.y, p.z, p.ang, 18, 5, 1.0, "#f4f1ea", "#2c5d8a", OUTLINE);                     // hull
         box(p.x, p.y, p.z + 1.0, p.ang, 9, 3.6, 1.6, "#ffffff", GLASS, OUTLINE); }, hit, tip }); // cabin
     } else {
-      out.push({ sx, sy, h: 3.0, draw: () => { shadow(p.x, p.y, p.z, p.ang, 12, 2.55); coach(p.x, p.y, p.z, p.ang, 12, 2.55, 3.0, color); }, hit, tip });
+      out.push({ sx, sy, h: 3.0, light: 2, draw: () => { shadow(p.x, p.y, p.z, p.ang, 12, 2.55); coach(p.x, p.y, p.z, p.ang, 12, 2.55, 3.0, color); }, hit, tip });
     }
   }
   return out;
@@ -304,7 +306,7 @@ function carItems(t, rect) {
     p.x += Math.sin(p.ang) * 1.6; p.y -= Math.cos(p.ang) * 1.6;      // keep right of the section line
     const [sx, sy] = project(p.x, p.y, p.z);
     if (!inRect(sx, sy, rect)) continue;
-    out.push({ sx, sy, h: 1.5, draw: () => carModel(p.x, p.y, p.z, p.ang, c.color) });
+    out.push({ sx, sy, h: 1.5, light: 1, draw: () => carModel(p.x, p.y, p.z, p.ang, c.color) });
   }
   return out;
 }
@@ -445,10 +447,13 @@ function frame() {
     hits.push({ x: cx, y: hy, r: it.hit.r * TN.dpr, open: it.hit.open });
     if (P && it.tip && Math.hypot(cx - P[0] * TN.dpr, hy - P[1] * TN.dpr) < it.hit.r * TN.dpr) tip = [cx, hy, it.tip()];
   };
+  const lights = [];
   for (const it of world3d) {
     if (it.sy && occluded(it.sx, it.sy - (it.h || 2) * COS45 * 0.5, it.sy)) continue;
     it.draw(); consider(it);
+    if (it.light) lights.push([...toCanvas(it.sx, it.sy), it.light]);
   }
+  live.lights = lights;
   for (const it of flat) { it.draw(); consider(it); }
   if (tip) label(tip[0], tip[1] - 20 * TN.dpr, tip[2]);
   TN.liveStats = { vehicles: vehicles.length, cars: cars.length, planes: planes.length, trains: trains.length, drawn: world3d.length + flat.length };

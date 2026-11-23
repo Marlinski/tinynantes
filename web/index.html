@@ -15,12 +15,15 @@
 <body>
 <canvas id="map" aria-label="Carte isométrique de Nantes. Glisser pour se déplacer, molette ou pincer pour zoomer."></canvas>
 <canvas id="live" aria-hidden="true"></canvas>
+<canvas id="tint" aria-hidden="true"></canvas>
+<canvas id="fx" aria-hidden="true"></canvas>
 <div id="tilt" aria-hidden="true"><div class="band top"></div><div class="band bottom"></div></div>
 <canvas id="labels" aria-hidden="true"></canvas>
 
 <header class="logo">
   <span class="tiny">TINY</span>
   <span class="name">Nantes</span>
+  <span id="wx" class="wx" hidden></span>
 </header>
 
 <form id="search" class="search" role="search" autocomplete="off">
@@ -55,7 +58,7 @@
   <p>Nantes en pixel art isométrique. Glisser pour se déplacer, molette ou pincer pour zoomer.</p>
   <p>Relief et bâti : LiDAR HD, BD TOPO et BD ORTHO de l'IGN (Licence Ouverte), mis en volume puis redessinés tuile par tuile par un modèle d'image (FLUX.2 klein).</p>
   <p>Inspiré par <a href="https://tinylasvegas.com" target="_blank" rel="noopener">tinylasvegas.com</a> et <a href="https://tinyrj.com" target="_blank" rel="noopener">tinyrj.com</a>.</p>
-  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; trains SNCF ; avions en ADS-B ; agenda de la Ville de Nantes ; cartes des restaurants lues sur leurs propres sites.</p>
+  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; trains SNCF ; avions en ADS-B ; agenda de la Ville de Nantes ; ciel, pluie et lumière du moment (Open-Meteo, position du soleil) ; cartes des restaurants lues sur leurs propres sites.</p>
   <p>Appuie sur 🚶 pour te promener : à pied, à vélo, en voiture, en tram.</p>
   <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN · Naolib, Nantes Métropole (ODbL) · SNCF open data · adsb.lol (ODbL), adsbdb.com · © contributeurs OpenStreetMap (ODbL)</p>
 </aside>
@@ -96,5 +99,6 @@
 <script src="app.js" type="module"></script>
 <script src="live.js" type="module"></script>
 <script src="game.js" type="module"></script>
+<script src="fx.js" type="module"></script>
 </body>
 </html>
