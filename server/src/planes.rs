@@ -13,12 +13,13 @@ use tokio::sync::RwLock;
 
 use crate::feeds::Origin;
 use crate::l93;
+use crate::store::Store;
 
-const NTE: (f64, f64) = (-1.6107, 47.1532); // lon, lat
+pub const NTE: (f64, f64) = (-1.6107, 47.1532); // lon, lat
 const FEED: &str = "https://api.adsb.lol/v2/point/47.1532/-1.6107/60";
 const ROUTE: &str = "https://api.adsbdb.com/v0/callsign/";
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct Airport {
     pub iata: String,
     pub name: String,
@@ -26,7 +27,7 @@ pub struct Airport {
     pub country: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct Route {
     pub airline: Option<String>,
     pub from: Option<Airport>,
@@ -73,12 +74,6 @@ pub struct Sky {
     pub departures: Vec<Movement>,
 }
 
-fn dist_km(lon: f64, lat: f64) -> f64 {
-    let dx = (lon - NTE.0) * 111.32 * (lat.to_radians().cos());
-    let dy = (lat - NTE.1) * 110.57;
-    (dx * dx + dy * dy).sqrt()
-}
-
 fn airport(v: &Value) -> Option<Airport> {
     Some(Airport {
         iata: v["iata_code"].as_str()?.to_string(),
@@ -97,11 +92,23 @@ async fn route(http: &reqwest::Client, cs: &str) -> Option<Route> {
     Some(Route { airline: r["airline"]["name"].as_str().map(String::from), from: airport(&r["origin"]), to: airport(&r["destination"]) })
 }
 
-pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>) -> Result<()> {
+pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>, store: &Store) -> Result<()> {
     let v: Value = http.get(FEED).send().await?.error_for_status()?.json().await?;
     let now = chrono::Utc::now().timestamp();
     let mut planes = vec![];
     let mut need = vec![];
+    {
+        let mut s = sky.write().await;
+        for a in v["ac"].as_array().into_iter().flatten() {
+            let cs = a["flight"].as_str().unwrap_or("").trim().to_string();
+            if cs.is_empty() || s.routes.contains_key(&cs) {
+                continue;
+            }
+            if let Some((ts, r)) = store.route(&cs) {
+                s.routes.insert(cs, (ts, r.and_then(|j| serde_json::from_str(&j).ok())));
+            }
+        }
+    }
     {
         let s = sky.read().await;
         for a in v["ac"].as_array().into_iter().flatten() {
@@ -111,7 +118,7 @@ pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>) 
             let ground = a["alt_baro"].as_str() == Some("ground");
             let alt = if ground { 0.0 } else { a["alt_geom"].as_f64().or(a["alt_baro"].as_f64()).unwrap_or(0.0) * 0.3048 };
             let (x, y) = l93::project(lon, lat);
-            if !cs.is_empty() && s.routes.get(&cs).map(|r| now - r.0 > 6 * 3600).unwrap_or(true) {
+            if !cs.is_empty() && s.routes.get(&cs).map(|r| now - r.0 > 3 * 86400).unwrap_or(true) {
                 need.push(cs.clone());
             }
             planes.push(Plane {
@@ -128,7 +135,6 @@ pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>) 
                 track: a["track"].as_f64().or(a["true_heading"].as_f64()).unwrap_or(0.0),
                 vrate: a["baro_rate"].as_f64().or(a["geom_rate"].as_f64()).unwrap_or(0.0) * 0.00508,
             });
-            let _ = dist_km(lon, lat);
         }
     }
     // routes for callsigns we don't know yet (a few per refresh, to stay polite)
@@ -138,6 +144,7 @@ pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>) 
     }
     let mut s = sky.write().await;
     for (cs, r) in found {
+        store.save_route(&cs, now, r.as_ref().and_then(|r| serde_json::to_string(r).ok()).as_deref());
         s.routes.insert(cs, (now, r));
     }
     for p in planes.iter_mut() {
@@ -147,8 +154,6 @@ pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>) 
     }
     // board: an aircraft low and close to NTE that was higher before is landing; the reverse is a take-off
     for p in &planes {
-        let (lon, lat) = (0.0, 0.0);
-        let _ = (lon, lat);
         let d = ((p.x - (s_nte_x(o))).hypot(p.y - s_nte_y(o))) / 1000.0;
         let prev = s.last_alt.insert(p.hex.clone(), (p.alt, d));
         let Some((palt, _)) = prev else { continue };
@@ -182,10 +187,10 @@ fn s_nte_y(o: Origin) -> f64 {
     l93::project(NTE.0, NTE.1).1 - o.1
 }
 
-pub async fn run(http: reqwest::Client, o: Origin, sky: Arc<RwLock<Sky>>) {
+pub async fn run(http: reqwest::Client, o: Origin, sky: Arc<RwLock<Sky>>, store: Arc<Store>) {
     let mut wait = 10;
     loop {
-        match refresh(&http, o, &sky).await {
+        match refresh(&http, o, &sky, &store).await {
             Ok(()) => wait = 10,
             Err(e) => {
                 tracing::warn!("planes: {e:#}");

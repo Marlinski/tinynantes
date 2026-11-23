@@ -83,8 +83,9 @@ fn midnight(d: NaiveDate) -> i64 {
 }
 
 pub fn load(dir: &Path, day: NaiveDate, o: Origin) -> Result<Day> {
-    let prev = day - Duration::days(1);
+    let (prev, next) = (day - Duration::days(1), day + Duration::days(1));
     let (ymd, ymd_prev) = (day.format("%Y%m%d").to_string(), prev.format("%Y%m%d").to_string());
+    let ymd_next = next.format("%Y%m%d").to_string();
     let mut on: HashMap<String, Vec<(i64, bool)>> = HashMap::new();
     let mut r = rdr(dir, "calendar_dates.txt")?;
     let h = r.headers()?.clone();
@@ -98,6 +99,9 @@ pub fn load(dir: &Path, day: NaiveDate, o: Origin) -> Result<Day> {
             on.entry(rec[sid].to_string()).or_default().push((midnight(day), false));
         } else if rec[dc] == *ymd_prev {
             on.entry(rec[sid].to_string()).or_default().push((midnight(prev), true));
+        } else if rec[dc] == *ymd_next {
+            // tomorrow's trains, so the board isn't empty late in the evening
+            on.entry(rec[sid].to_string()).or_default().push((midnight(next), false));
         }
     }
     let mut stops: HashMap<String, (String, f64, f64)> = HashMap::new();
@@ -107,7 +111,8 @@ pub fn load(dir: &Path, day: NaiveDate, o: Origin) -> Result<Day> {
     for rec in r.records() {
         let rec = rec?;
         let (x, y) = l93::project(rec[lo].parse().unwrap_or(0.0), rec[la].parse().unwrap_or(0.0));
-        stops.insert(rec[id].to_string(), (rec[nm].to_string(), x - o.0, y - o.1));
+        let name = rec[nm].split(" Hall ").next().unwrap_or(&rec[nm]).trim().to_string(); // "Paris Montparnasse Hall 1 - 2"
+        stops.insert(rec[id].to_string(), (name, x - o.0, y - o.1));
     }
     let mut trips: HashMap<String, Vec<(i64, bool)>> = HashMap::new();
     let mut r = rdr(dir, "trips.txt")?;
@@ -221,10 +226,10 @@ pub fn board(day: &Day, delays: &HashMap<usize, Vec<i32>>, now: i64) -> Board {
     for (k, t) in day.trains.iter().enumerate() {
         let d = delays.get(&k).map(|v| v[t.at]).unwrap_or(0);
         let s = &t.stops[t.at];
-        if t.at > 0 && s.arr + d as i64 > now - 300 && s.arr < now + 4 * 3600 {
+        if t.at > 0 && s.arr + d as i64 > now - 300 && s.arr < now + 12 * 3600 {
             b.arrivals.push(BoardRow { number: t.number.clone(), mode: t.mode.clone(), other: t.stops[0].name.clone(), time: s.arr, delay: d });
         }
-        if t.at + 1 < t.stops.len() && s.dep + d as i64 > now - 120 && s.dep < now + 4 * 3600 {
+        if t.at + 1 < t.stops.len() && s.dep + d as i64 > now - 120 && s.dep < now + 12 * 3600 {
             b.departures.push(BoardRow { number: t.number.clone(), mode: t.mode.clone(), other: t.stops.last().unwrap().name.clone(), time: s.dep, delay: d });
         }
     }

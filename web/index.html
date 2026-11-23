@@ -40,7 +40,9 @@
   <hr>
   <button id="tiltBtn" title="Effet tilt-shift (D)" aria-pressed="true">◎</button>
   <button id="labelsBtn" title="Lieux (L)" aria-pressed="true">⚑</button>
-  <button id="liveBtn" title="En direct : trams, bus, trafic, événements" aria-pressed="true">◉</button>
+  <button id="liveBtn" title="En direct : trams, bus, trains, avions, trafic, événements" aria-pressed="true">◉</button>
+  <button id="playBtn" title="Jouer : se promener, prendre le tram, entrer dans les restos" aria-pressed="false">🚶</button>
+  <button id="airportBtn" title="Aéroport : décollages et atterrissages">✈</button>
   <button id="share" title="Partager cette vue">⇪</button>
   <button id="info" title="À propos">i</button>
 </nav>
@@ -53,12 +55,46 @@
   <p>Nantes en pixel art isométrique. Glisser pour se déplacer, molette ou pincer pour zoomer.</p>
   <p>Relief et bâti : LiDAR HD, BD TOPO et BD ORTHO de l'IGN (Licence Ouverte), mis en volume puis redessinés tuile par tuile par un modèle d'image (FLUX.2 klein).</p>
   <p>Inspiré par <a href="https://tinylasvegas.com" target="_blank" rel="noopener">tinylasvegas.com</a> et <a href="https://tinyrj.com" target="_blank" rel="noopener">tinyrj.com</a>.</p>
-  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; agenda de la Ville de Nantes.</p>
-  <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN · Naolib, Nantes Métropole (ODbL) · © contributeurs OpenStreetMap (ODbL)</p>
+  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; trains SNCF ; avions en ADS-B ; agenda de la Ville de Nantes ; cartes des restaurants lues sur leurs propres sites.</p>
+  <p>Appuie sur 🚶 pour te promener : à pied, à vélo, en voiture, en tram.</p>
+  <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN · Naolib, Nantes Métropole (ODbL) · SNCF open data · adsb.lol (ODbL), adsbdb.com · © contributeurs OpenStreetMap (ODbL)</p>
 </aside>
+<aside id="side" class="side" hidden aria-live="polite">
+  <button id="sideClose" class="close" aria-label="Fermer">×</button>
+  <div id="sideBody"></div>
+</aside>
+
+<div id="login" class="modal" hidden>
+  <form id="loginForm" class="card">
+    <h2>Entrer dans Nantes</h2>
+    <label>Ton nom <input id="loginName" required minlength="3" maxlength="20" autocomplete="username"></label>
+    <label>Mot de passe <small>(facultatif : pour réserver ce nom)</small>
+      <input id="loginPass" type="password" minlength="6" autocomplete="current-password"></label>
+    <p id="loginErr" class="err"></p>
+    <div class="row"><button type="button" id="loginCancel">Annuler</button><button type="submit" class="act">Jouer</button></div>
+    <p class="hint">Sans mot de passe tu joues en invité. Avec, le nom est à toi : la prochaine fois il faudra le même mot de passe. Les messages du chat sont publics et conservés.</p>
+  </form>
+</div>
+
+<div id="game" class="game">
+  <div id="hud" class="hud"></div>
+  <div id="modes" class="modes">
+    <button data-m="walk" title="À pied (1) · Maj pour courir">🚶</button>
+    <button data-m="bike" title="Vélo (2)">🚲</button>
+    <button data-m="car" title="Voiture (3)">🚗</button>
+  </div>
+  <div class="chat">
+    <ul id="chatLog"></ul>
+    <form id="chatForm"><input id="chatIn" maxlength="280" placeholder="Message… (Entrée)" autocomplete="off"></form>
+  </div>
+  <div id="joy" class="joy"><i></i></div>
+  <button id="actBtn" class="actbtn" title="Monter, descendre, entrer (E)">E</button>
+  <p class="keys">ZQSD / flèches · Maj courir · 1 2 3 mode · E monter, descendre, entrer · Entrée chat · Échap quitter</p>
+</div>
 <div id="toast" class="toast" hidden></div>
 <div class="credit-badge">© IGN</div>
 <script src="app.js" type="module"></script>
 <script src="live.js" type="module"></script>
+<script src="game.js" type="module"></script>
 </body>
 </html>

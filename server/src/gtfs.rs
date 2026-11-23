@@ -22,6 +22,7 @@ pub struct Trip {
     pub shape: String,
     pub headsign: String,
     pub stop_ids: Vec<String>,
+    pub names: Vec<std::sync::Arc<str>>,
     pub seq: Vec<u32>,
     pub arr: Vec<i64>, // epoch seconds
     pub dep: Vec<i64>,
@@ -121,6 +122,16 @@ pub fn load(dir: &Path, day: NaiveDate, shapes: &HashMap<String, usize>) -> Resu
     let (on_today, on_prev) = (active_services(dir, day)?, active_services(dir, prev)?);
     let (base_today, base_prev) = (midnight(day), midnight(prev));
 
+    // stop names (quays carry their stop area's name)
+    let mut names: HashMap<String, std::sync::Arc<str>> = HashMap::new();
+    let mut r = reader(dir, "stops.txt")?;
+    let h = r.headers()?.clone();
+    let (sidc, snc) = (col(&h, "stop_id")?, col(&h, "stop_name")?);
+    for rec in r.records() {
+        let rec = rec?;
+        names.insert(rec[sidc].to_string(), rec[snc].into());
+    }
+
     // trips on the map, for either service day
     let mut wanted: HashMap<String, Vec<(i64, bool)>> = HashMap::new(); // trip -> [(base, is_prev)]
     let mut meta: HashMap<String, (String, String, String)> = HashMap::new();
@@ -183,6 +194,7 @@ pub fn load(dir: &Path, day: NaiveDate, shapes: &HashMap<String, usize>) -> Resu
                 shape: shape.clone(),
                 headsign: headsign.clone(),
                 stop_ids: st.iter().map(|s| s.3.clone()).collect(),
+                names: st.iter().map(|s| names.get(&s.3).cloned().unwrap_or_else(|| "".into())).collect(),
                 seq: st.iter().map(|s| s.0).collect(),
                 arr: st.iter().map(|s| base + s.1).collect(),
                 dep: st.iter().map(|s| base + s.2).collect(),
@@ -255,6 +267,8 @@ pub struct Vehicle<'a> {
     /// expected arrival / departure (epoch s) at stops k0.. of the shape, realtime-corrected when known
     pub arr: Vec<i64>,
     pub dep: Vec<i64>,
+    /// stop names, from k0
+    pub names: Vec<&'a str>,
     /// current delay in seconds (None: schedule only)
     pub delay: Option<i32>,
 }
@@ -289,6 +303,7 @@ pub fn vehicles<'a>(
             k0,
             arr: (k0..n).map(|i| at(i, t.arr[i])).collect(),
             dep: (k0..n).map(|i| at(i, t.dep[i])).collect(),
+            names: (k0..n).map(|i| &*t.names[i]).collect(),
             delay: d.map(|d| d[k0]),
         });
     }

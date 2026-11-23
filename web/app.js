@@ -18,7 +18,10 @@ let showLabels = true;
 const cache = new Map();                // "L/i_j" -> { img, ready }
 let dirty = true;
 // shared with live.js (animated layer)
-window.TN = { view, get man() { return man; }, get dpr() { return dpr; }, get H() { return H; }, pointer: null };
+window.TN = { view, get man() { return man; }, get dpr() { return dpr; }, get H() { return H; }, pointer: null,
+  playing: false, click: null,
+  // the game moves the camera: center on screen point (sx, sy), optionally at scale s
+  follow(sx, sy, s) { view.x = sx; view.y = sy; if (s) view.s = s; anim = null; vel = null; dirty = true; } };
 
 // ---------------------------------------------------------------- loading
 async function loadManifest(h) {
@@ -187,11 +190,12 @@ function zoomAt(f, px = innerWidth / 2, py = innerHeight / 2) {
 // ---------------------------------------------------------------- input
 let dragging = false;
 const pointers = new Map();
-let pinch = null, last = null;
+let pinch = null, last = null, down0 = null;
 cv.addEventListener("pointerdown", (e) => {
   cv.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]);
   anim = null; vel = null; dragging = true; cv.classList.add("drag");
   last = { x: e.clientX, y: e.clientY, t: performance.now() };
+  down0 = { x: e.clientX, y: e.clientY, t: last.t };
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s: view.s };
@@ -208,6 +212,7 @@ cv.addEventListener("pointermove", (e) => {
     return;
   }
   const dx = e.clientX - prev[0], dy = e.clientY - prev[1];
+  if (TN.playing) return;                         // the camera follows the avatar
   view.x -= dx / view.s; view.y -= dy / view.s; clamp(); dirty = true;
   const t = performance.now();
   vel = { x: dx * 16 / Math.max(8, t - last.t), y: dy * 16 / Math.max(8, t - last.t) };
@@ -218,6 +223,9 @@ const up = (e) => {
   if (pointers.size < 2) pinch = null;
   if (pointers.size === 0) {
     dragging = false; cv.classList.remove("drag");
+    // a tap (no drag): open what's under it (vehicle, place, event...)
+    if (down0 && Math.hypot(e.clientX - down0.x, e.clientY - down0.y) < 6 && performance.now() - down0.t < 400
+        && TN.click?.(e.clientX, e.clientY)) { vel = null; return; }
     if (performance.now() - last.t > 80) vel = null;
     if (!vel) writeHash();
   }
@@ -232,7 +240,8 @@ cv.addEventListener("wheel", (e) => {
 cv.addEventListener("dblclick", (e) => { const wx = view.x + (e.clientX - innerWidth / 2) / view.s, wy = view.y + (e.clientY - innerHeight / 2) / view.s; flyTo(wx, wy, view.s * 2); });
 
 addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT") { if (e.key === "Escape") e.target.blur(); return; }
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") { if (e.key === "Escape") e.target.blur(); return; }
+  if (TN.playing) return;                         // keys drive the avatar (game.js)
   const step = 120 / view.s;
   const k = e.key;
   if (k === "+" || k === "=") zoomAt(1.5);

@@ -14,6 +14,7 @@ mod planes;
 mod players;
 mod rt;
 mod sncf;
+mod store;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -22,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path as UrlPath, Request, State};
+use axum::extract::{Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -84,6 +85,7 @@ struct App {
     sky: Arc<RwLock<planes::Sky>>,
     sncf: RwLock<Cached<Arc<sncf::Day>>>,
     sncf_delays: RwLock<Cached<HashMap<usize, Vec<i32>>>>,
+    store: Arc<store::Store>,
 }
 
 fn now() -> i64 {
@@ -100,15 +102,27 @@ async fn main() -> anyhow::Result<()> {
     let port: u16 = std::env::var("TN_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let origin = feeds::origin_from_world(&web.join("data/world/world.json"))?;
     let http = reqwest::Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(120)).build()?;
+    let store = Arc::new(store::Store::open(&data.join("tinynantes.db"), data.join("places"))?);
+    // last good copies from the previous run: served until the first refresh succeeds
+    let restore = |key: &str| {
+        let mut c = Cached::<Bytes>::default();
+        if let Some((ts, b)) = store.load_feed(key) {
+            c.value = Some(Bytes::from(b));
+            c.ok_at = Some(ts);
+        }
+        RwLock::new(c)
+    };
+    let (traffic0, events0) = (restore("traffic"), restore("events"));
     let app = Arc::new(App {
+        store: store.clone(),
         http,
         origin,
         web: web.clone(),
         data,
         timetable: Default::default(),
         rt: Default::default(),
-        traffic: Default::default(),
-        events: Default::default(),
+        traffic: traffic0,
+        events: events0,
         vehicles: RwLock::new((0, Bytes::new())),
         sky: Default::default(),
         sncf: Default::default(),
@@ -120,7 +134,8 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(rt_loop(app.clone()));
     tokio::spawn(every(app.clone(), 180, |a| Box::pin(refresh_traffic(a))));
     tokio::spawn(every(app.clone(), 3600, |a| Box::pin(refresh_events(a))));
-    tokio::spawn(planes::run(app.http.clone(), app.origin, app.sky.clone()));
+    tokio::spawn(planes::run(app.http.clone(), app.origin, app.sky.clone(), store.clone()));
+    tokio::spawn(places_loop(store.clone()));
     tokio::spawn(sncf_loop(app.clone()));
 
     let api = Router::new()
@@ -133,6 +148,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/station", get(station))
         .route("/api/trains", get(trains))
         .route("/api/poi/:id", get(poi))
+        .route("/api/places/search", get(places_search))
+        .route("/api/places/menus", get(places_menus))
         .route("/healthz", get(|| async { "ok\n" }))
         .with_state(app);
     let social = Router::new()
@@ -237,6 +254,9 @@ async fn refresh_traffic(app: Arc<App>) {
     if let Err(e) = &r {
         tracing::warn!("traffic: {e:#}");
     }
+    if let Ok(b) = &r {
+        app.store.save_feed("traffic", now(), b);
+    }
     app.traffic.write().await.set(r);
 }
 
@@ -244,6 +264,9 @@ async fn refresh_events(app: Arc<App>) {
     let r = feeds::events(&app.http, app.origin).await.and_then(|v| Ok(Bytes::from(serde_json::to_vec(&v)?)));
     if let Err(e) = &r {
         tracing::warn!("events: {e:#}");
+    }
+    if let Ok(b) = &r {
+        app.store.save_feed("events", now(), b);
     }
     app.events.write().await.set(r);
 }
@@ -335,7 +358,9 @@ async fn airport(State(app): State<Arc<App>>) -> Response {
     let mut dep = s.departures.clone();
     arr.reverse();
     dep.reverse();
-    let v = serde_json::json!({"arrivals": arr, "departures": dep,
+    let (x, y) = l93::project(planes::NTE.0, planes::NTE.1);
+    let v = serde_json::json!({"name": "Nantes Atlantique (NTE)", "p": [x - app.origin.0, y - app.origin.1],
+        "arrivals": arr, "departures": dep,
         "note": "Mouvements observés en ADS-B (adsb.lol) ; routes : adsbdb.com"});
     json(Bytes::from(v.to_string()))
 }
@@ -396,14 +421,49 @@ async fn trains(State(app): State<Arc<App>>) -> Response {
     json(Bytes::from(serde_json::to_vec(&serde_json::json!({"now": t, "items": m})).unwrap_or_default()))
 }
 
-/// GET /api/poi/:id -> what we gathered about a place (menu, links), from TN_DATA/places/<id>.json
+/// GET /api/poi/:id -> what the crawler gathered about a place (menu, links), from the SQLite store
 async fn poi(State(app): State<Arc<App>>, UrlPath(id): UrlPath<String>) -> Response {
     let ok = id.len() < 24 && id.starts_with(['n', 'w', 'r']) && id[1..].chars().all(|c| c.is_ascii_digit());
     if !ok {
         return (StatusCode::BAD_REQUEST, "bad id").into_response();
     }
-    match tokio::fs::read(app.data.join("places").join(format!("{id}.json"))).await {
-        Ok(b) => json(Bytes::from(b)),
-        Err(_) => (StatusCode::NOT_FOUND, "{}").into_response(),
+    let st = app.store.clone();
+    match tokio::task::spawn_blocking(move || st.place(&id)).await.ok().flatten() {
+        Some(b) => json(Bytes::from(b)),
+        None => (StatusCode::NOT_FOUND, "{}").into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SearchQ {
+    q: String,
+}
+
+/// GET /api/places/search?q=galette -> places whose name or menu matches
+async fn places_search(State(app): State<Arc<App>>, Query(q): Query<SearchQ>) -> Response {
+    if q.q.len() > 100 {
+        return (StatusCode::BAD_REQUEST, "query too long").into_response();
+    }
+    let st = app.store.clone();
+    let v = tokio::task::spawn_blocking(move || st.search(&q.q, 30)).await.unwrap_or_default();
+    json(Bytes::from(serde_json::to_vec(&v).unwrap_or_default()))
+}
+
+/// GET /api/places/menus -> ids of places with a menu (the viewer marks them)
+async fn places_menus(State(app): State<Arc<App>>) -> Response {
+    let st = app.store.clone();
+    let v = tokio::task::spawn_blocking(move || st.place_ids_with_menu()).await.unwrap_or_default();
+    json(Bytes::from(serde_json::to_vec(&v).unwrap_or_default()))
+}
+
+async fn places_loop(st: Arc<store::Store>) {
+    loop {
+        let s = st.clone();
+        match tokio::task::spawn_blocking(move || s.import_places()).await {
+            Ok(Ok(n)) if n > 0 => tracing::info!("places: imported {n}"),
+            Ok(Err(e)) => tracing::warn!("places: {e:#}"),
+            _ => {}
+        }
+        tokio::time::sleep(Duration::from_secs(300)).await;
     }
 }

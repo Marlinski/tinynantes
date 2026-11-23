@@ -367,6 +367,158 @@ def export():
         print(f"{f.name}: {f.stat().st_size / 1e6:.1f} MB")
 
 
+# ---------------------------------------------------------------- navigation raster for the game
+
+NAV_RES, NAV_CHUNK = 1.0, 250.0
+ROAD_W = {"motorway": 14, "trunk": 12, "primary": 11, "secondary": 9, "tertiary": 8, "unclassified": 6,
+          "residential": 6.5, "living_street": 5, "service": 4, "busway": 6, "motorway_link": 7, "trunk_link": 7,
+          "primary_link": 7, "secondary_link": 7, "tertiary_link": 6}
+FOOT_W = {"pedestrian": 8, "footway": 3, "path": 2.5, "steps": 3, "cycleway": 3, "track": 3.5, "corridor": 3}
+B_BUILDING, B_WATER, B_ROAD, B_FOOT = 1, 2, 4, 8
+
+
+def nav():
+    """web/data/world/nav/CX_CY.png: 250 m chunks at 1 m. Red = flags (1 building, 2 water, 4 drivable road,
+    8 footway/pedestrian), green = deck height above the terrain on bridges (decimetres)."""
+    from PIL import ImageDraw
+    o = load_osm()
+    out = WEB / "nav"
+    out.mkdir(parents=True, exist_ok=True)
+    x0, y0, x1, y1 = area(300)
+    cxs = range(int(x0 // NAV_CHUNK), int(x1 // NAV_CHUNK) + 1)
+    cys = range(int(y0 // NAV_CHUNK), int(y1 // NAV_CHUNK) + 1)
+    bins = defaultdict(list)
+    for w in o["roads"]:
+        if w["tunnel"]:
+            continue
+        a = np.asarray(w["xy"])
+        for cx in range(int((a[:, 0].min() - 10) // NAV_CHUNK), int((a[:, 0].max() + 10) // NAV_CHUNK) + 1):
+            for cy in range(int((a[:, 1].min() - 10) // NAV_CHUNK), int((a[:, 1].max() + 10) // NAV_CHUNK) + 1):
+                bins[(cx, cy)].append(w)
+    n = int(NAV_CHUNK / NAV_RES)
+    count = 0
+    for cx in cxs:
+        for cy in cys:
+            bx0, by0 = cx * NAV_CHUNK, cy * NAV_CHUNK
+            bbox = (bx0, by0, bx0 + NAV_CHUNK, by0 + NAV_CHUNK)
+            if (out / f"{cx}_{cy}.png").exists():
+                count += 1
+                continue
+            px = lambda pts: [((x - bx0) / NAV_RES, (by0 + NAV_CHUNK - y) / NAV_RES) for x, y in pts]
+            flags = np.zeros((n, n), "u1")
+            # water (BD TOPO hydrography raster, 0.5 m)
+            eau, (gx0, gy1), r = ign.mosaic("eau", bbox)
+            r0, c0 = int(round((gy1 - (by0 + NAV_CHUNK)) / r)), int(round((bx0 - gx0) / r))
+            k = int(NAV_RES / r)
+            sub = eau[r0:r0 + n * k, c0:c0 + n * k]
+            if sub.shape == (n * k, n * k):
+                flags |= (sub.reshape(n, k, n, k).max(axis=(1, 3)) > 0).astype("u1") * B_WATER
+            # buildings
+            im = Image.new("L", (n, n), 0); d = ImageDraw.Draw(im)
+            for attempt in range(5):
+                try:
+                    blds = ign.buildings(bbox)
+                    break
+                except ValueError:          # the WFS sometimes answers with an error page; wait and retry
+                    import time
+                    time.sleep(20 * (attempt + 1))
+            else:
+                raise RuntimeError(f"BD TOPO buildings unavailable for {bbox}")
+            for b in blds:
+                if b.get("light"):
+                    continue
+                rings = b["rings"]
+                d.polygon(px(rings[0]), fill=1)
+                for hole in rings[1:]:
+                    d.polygon(px(hole), fill=0)
+            flags |= np.asarray(im, "u1") * B_BUILDING
+            # streets (drawn after buildings: arcades and passages under buildings stay usable)
+            road = Image.new("L", (n, n), 0); dr = ImageDraw.Draw(road)
+            foot = Image.new("L", (n, n), 0); df = ImageDraw.Draw(foot)
+            deck = Image.new("L", (n, n), 0); dd = ImageDraw.Draw(deck)
+            bridge_ways = []
+            for w in bins.get((cx, cy), []):
+                pts = px(w["xy"])
+                if w["hw"] in ROAD_W and w.get("access") not in ("no", "private"):
+                    wd = max(2, round(ROAD_W[w["hw"]] / NAV_RES))
+                    dr.line(pts, fill=1, width=wd, joint="curve")
+                    df.line(pts, fill=1, width=wd + round(6 / NAV_RES), joint="curve")   # sidewalks
+                elif w["hw"] in FOOT_W:
+                    df.line(pts, fill=1, width=max(2, round(FOOT_W[w["hw"]] / NAV_RES)), joint="curve")
+                else:
+                    continue
+                if w["bridge"]:
+                    bridge_ways.append((pts, ROAD_W.get(w["hw"], FOOT_W.get(w["hw"], 4)) + 4))
+            R, F = np.asarray(road, "u1"), np.asarray(foot, "u1")
+            flags = np.where(R > 0, (flags & ~np.uint8(B_BUILDING)) | B_ROAD, flags)
+            flags = np.where(F > 0, (flags & ~np.uint8(B_BUILDING)) | B_FOOT, flags)
+            hdeck = np.zeros((n, n), "u1")
+            if bridge_ways:
+                for pts, wd in bridge_ways:
+                    dd.line(pts, fill=1, width=max(2, round(wd / NAV_RES)))
+                mask = np.asarray(deck, "u1") > 0
+                mns, (sx0, sy1), rs = ign.mosaic("mns", bbox)
+                mnt, _, _ = ign.mosaic("mnt", bbox)
+                kk = int(NAV_RES / rs)
+                rr0, cc0 = int(round((sy1 - (by0 + NAV_CHUNK)) / rs)), int(round((bx0 - sx0) / rs))
+                hh = (mns - mnt)[rr0:rr0 + n * kk, cc0:cc0 + n * kk]
+                if hh.shape == (n * kk, n * kk):
+                    hh = np.median(hh.reshape(n, kk, n, kk), axis=(1, 3))
+                    from scipy import ndimage
+                    hh = ndimage.median_filter(np.where(mask, hh, 0), 5)
+                    hdeck = np.where(mask, np.clip(np.round(hh * 10), 0, 255), 0).astype("u1")
+                    flags = np.where(mask & (hdeck > 15), flags & ~np.uint8(B_WATER), flags)
+            rgb = np.stack([flags, hdeck, np.zeros_like(flags)], -1)
+            Image.fromarray(rgb, "RGB").save(out / f"{cx}_{cy}.png", optimize=True)
+            count += 1
+    meta = json.loads((WEB / "world.json").read_text())
+    meta["nav"] = {"res": NAV_RES, "chunk": NAV_CHUNK, "flags": {"building": B_BUILDING, "water": B_WATER,
+                                                                  "road": B_ROAD, "foot": B_FOOT}}
+    (WEB / "world.json").write_text(json.dumps(meta))
+    print(f"nav: {count} chunks", flush=True)
+
+
+def rail_routes():
+    """Rail lines from Nantes station to the edge of the map (one per direction), for placing trains."""
+    o = load_osm()
+    g = Graph([w for w in o["rails"] if w["rw"] == "rail" and w.get("service") in (None, "main")], directed=False)
+    st = _to_l93.transform(-1.542077, 47.217491)
+    start = g.nearest(*st, k=1)[0][0]
+    import heapq
+    dist, prev = {start: 0.0}, {}
+    q = [(0.0, start)]
+    while q:
+        d, n = heapq.heappop(q)
+        if d > dist.get(n, 1e18):
+            continue
+        for m, L in g.adj[n]:
+            if d + L < dist.get(m, 1e18):
+                dist[m] = d + L; prev[m] = n; heapq.heappush(q, (d + L, m))
+    x0, y0, x1, y1 = geo.AREA
+    best = {}
+    for n, d in dist.items():
+        x, y = g.xy[n]
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            continue
+        ang = round(math.degrees(math.atan2(y - st[1], x - st[0])) / 20)
+        if ang not in best or d < best[ang][1]:
+            best[ang] = (n, d)                         # first exit in that direction
+    T = Terrain()
+    ox, oy = geo.ORIGIN
+    routes = []
+    for n, d in best.values():
+        path = [n]
+        while path[-1] in prev:
+            path.append(prev[path[-1]])
+        xy = np.array([g.xy[k] for k in reversed(path)])
+        z = T.z(xy)
+        routes.append({"p": [[round(x - ox, 1), round(y - oy, 1), round(float(h), 1)] for (x, y), h in zip(xy, z)],
+                       "len": round(d, 1)})
+    (WEB / "rails.json").write_text(json.dumps({"station": [round(st[0] - ox, 1), round(st[1] - oy, 1)],
+                                                "routes": routes}, separators=(",", ":")))
+    print(f"rail routes from the station: {len(routes)}", flush=True)
+
+
 def main(argv):
     what = argv[0] if argv else "all"
     if what in ("osm", "all"):
@@ -375,6 +527,10 @@ def main(argv):
         transit()
     if what in ("export", "all"):
         export()
+    if what in ("nav", "all"):
+        nav()
+    if what in ("rails", "all"):
+        rail_routes()
 
 
 if __name__ == "__main__":
