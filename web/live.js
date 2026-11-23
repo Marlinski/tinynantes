@@ -132,7 +132,7 @@ function vehiclePose(v, t) {
     }
   }
   const p = along(sh, d);
-  p.stop = stop;
+  p.stop = stop; p.d = d;
   return p;
 }
 
@@ -235,6 +235,30 @@ function visibleRect(margin = 40) {
 }
 
 // ---------------------------------------------------------------- per-frame items
+// ---------------------------------------------------------------- vehicle models
+// Small stacked boxes read as vehicles at this scale: a ground shadow, a body, a glass band, a roof.
+const GLASS = "#33414d", OUTLINE = "rgba(18,22,26,.7)";
+function shadow(x, y, z, ang, L, W) {
+  const c = Math.cos(ang), s = Math.sin(ang), hl = L / 2 + 0.3, hw = W / 2 + 0.3;
+  const q = [[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]].map(([u, v]) => toCanvas(...project(x + u * c - v * s, y + u * s + v * c, z)));
+  ctx.fillStyle = "rgba(10,14,18,.28)";
+  ctx.beginPath(); q.forEach((p, k) => (k ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.fill();
+}
+function carModel(x, y, z, ang, color) {
+  const ol = TN.view.s > 1.6 ? OUTLINE : null;
+  shadow(x, y, z, ang, 4.3, 1.8);
+  box(x, y, z + 0.25, ang, 4.3, 1.8, 0.7, shade(color, 1.05), color, ol);                     // body
+  const bx = x - Math.cos(ang) * 0.25, by = y - Math.sin(ang) * 0.25;
+  box(bx, by, z + 0.95, ang, 2.3, 1.6, 0.55, shade(color, 1.15), GLASS, ol);                    // cabin: glass sides, roof
+}
+// a coach (bus, tram car, ferry deck): lower body in the line colour, a window band, a white roof
+function coach(x, y, z, ang, L, W, H, color, roof = "#eef0ec") {
+  const ol = TN.view.s > 1.2 ? OUTLINE : null;
+  box(x, y, z + 0.35, ang, L, W, H * 0.33, shade(color, 1.0), color, ol);
+  box(x, y, z + 0.35 + H * 0.33, ang, L - 0.2, W - 0.06, H * 0.38, "#dfe3e2", GLASS, ol);
+  box(x, y, z + 0.35 + H * 0.71, ang, L, W, H * 0.29 - 0.35, roof, shade(roof, 0.86), ol);
+}
+const TRAM_SEG = 8.0;
 function transitItems(t, rect) {
   const out = [];
   for (const v of vehicles) {
@@ -242,10 +266,28 @@ function transitItems(t, rect) {
     const p = vehiclePose(v, t);
     const [sx, sy] = project(p.x, p.y, p.z);
     if (!inRect(sx, sy, rect)) continue;
-    const k = KIND[r.type] || KIND[3];
-    out.push({ sx, sy, h: k.H, draw: () => box(p.x, p.y, p.z + 0.3, p.ang, k.L, k.W, k.H, "#f2f2ee", r.color, TN.view.s > 2 ? "rgba(20,24,28,.55)" : null),
-               hit: { r: 16, open: () => live.open?.("vehicle", { v, r }) },
-               tip: () => [`${{ 0: "Tram", 3: "Bus", 4: "Navibus" }[r.type] || "Ligne"} ${r.short} → ${v.headsign}`, delayText(v.delay)] });
+    const hit = { r: 16, open: () => live.open?.("vehicle", { v, r }) };
+    const tip = () => [`${{ 0: "Tram", 3: "Bus", 4: "Navibus" }[r.type] || "Ligne"} ${r.short} → ${v.headsign}`, delayText(v.delay)];
+    const color = r.color && r.color !== "#ffffff" ? r.color : "#3a8f5c";
+    if (r.type === 0) {
+      // articulated tram: 4 cars following the track, the head at the pose
+      const sh = world.shapes[v.shape];
+      const segs = [0, 1, 2, 3].map((k) => along(sh, p.d - (k + 0.5) * TRAM_SEG));
+      const back = Math.min(...segs.map((q) => project(q.x, q.y, q.z)[1]));
+      out.push({ sx, sy: back - 0.05, h: 0, draw: () => segs.forEach((q) => shadow(q.x, q.y, q.z, q.ang, TRAM_SEG, 2.65)) });
+      for (let k = 0; k < 4; k++) {
+        const q = segs[k];
+        const [qx, qy] = project(q.x, q.y, q.z);
+        out.push({ sx: qx, sy: qy, h: 3.3, draw: () => coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color),
+                   hit: k === 0 ? hit : null, tip: k === 0 ? tip : null });
+      }
+    } else if (r.type === 4) {
+      out.push({ sx, sy, h: 2.5, draw: () => { shadow(p.x, p.y, p.z, p.ang, 18, 5);
+        box(p.x, p.y, p.z, p.ang, 18, 5, 1.0, "#f4f1ea", "#2c5d8a", OUTLINE);                     // hull
+        box(p.x, p.y, p.z + 1.0, p.ang, 9, 3.6, 1.6, "#ffffff", GLASS, OUTLINE); }, hit, tip }); // cabin
+    } else {
+      out.push({ sx, sy, h: 3.0, draw: () => { shadow(p.x, p.y, p.z, p.ang, 12, 2.55); coach(p.x, p.y, p.z, p.ang, 12, 2.55, 3.0, color); }, hit, tip });
+    }
   }
   return out;
 }
@@ -262,7 +304,7 @@ function carItems(t, rect) {
     p.x += Math.sin(p.ang) * 1.6; p.y -= Math.cos(p.ang) * 1.6;      // keep right of the section line
     const [sx, sy] = project(p.x, p.y, p.z);
     if (!inRect(sx, sy, rect)) continue;
-    out.push({ sx, sy, h: 1.45, draw: () => box(p.x, p.y, p.z + 0.2, p.ang, 4.3, 1.8, 1.45, shade(c.color, 1.08), c.color, TN.view.s > 3 ? "rgba(20,24,28,.5)" : null) });
+    out.push({ sx, sy, h: 1.5, draw: () => carModel(p.x, p.y, p.z, p.ang, c.color) });
   }
   return out;
 }
@@ -292,7 +334,7 @@ function trainItems(t, rect) {
       const p = along(best, dk);
       const [sx, sy] = project(p.x, p.y, p.z);
       if (!inRect(sx, sy, rect)) continue;
-      out.push({ sx, sy, h: 4, draw: () => box(p.x, p.y, p.z + 0.4, p.ang, 25, 2.9, 3.9, top, side, TN.view.s > 2 ? "rgba(20,24,28,.5)" : null),
+      out.push({ sx, sy, h: 4, draw: () => { shadow(p.x, p.y, p.z, p.ang, 25, 2.9); coach(p.x, p.y, p.z, p.ang, 25, 2.9, 4.0, side, top); },
                  hit: k === 0 ? { r: 18, open: () => live.open?.("train", m) } : null,
                  tip: k === 0 ? () => [`${m.mode} ${m.number} → ${m.headsign}`, m.delay ? `retard ${Math.round(m.delay / 60)} min` : "à l'heure"] : null });
     }
@@ -323,8 +365,9 @@ function planeItems(t, rect) {
 function poiItems(t, rect) {
   const out = [];
   const s = TN.view.s;
-  if (s < 3 && !TN.playing) return out;
+  if (s < 0.9 && !TN.playing) return out;
   for (const p of world.pois) {
+    if (s < 1.8 && !TN.playing && !menus.has(p.id)) continue;      // zoomed out: only places with a menu
     const [x, y, z] = p.p, [sx, sy] = project(x, y, z);
     if (!inRect(sx, sy, rect)) continue;
     out.push({ sx, sy, h: 0, overlay: true, draw: () => {
