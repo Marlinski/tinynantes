@@ -79,9 +79,26 @@ def main():
             shutil.rmtree(DATA / f"h{h}", ignore_errors=True)
             continue
         publish_heading(h, art, DATA / f"h{h}")
+        publish_heights(h, DATA / f"h{h}" / "hgt")
         heads.append(h)
     (DATA / "headings.json").write_text(json.dumps(heads))
     (DATA / "places.json").write_text(json.dumps(places(), ensure_ascii=False))
+
+
+def publish_heights(h, out, M=128):
+    """Height maps (u8, 0.5 m steps above the ground, from the render's depth buffer) cropped to each tile's
+    core: the viewer hides moving sprites behind buildings with them."""
+    src = ROOT / "out" / "g3d" / f"h{h}"
+    out.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for f in src.glob("*_hgt.png"):
+        w = out / (f.name.replace("_hgt", ""))
+        if w.exists() and w.stat().st_mtime >= f.stat().st_mtime:
+            continue
+        im = Image.open(f)
+        im.crop((M, M, im.width - M, im.height - M)).save(w, optimize=True)
+        n += 1
+    print(f"h{h}: {n} height maps published")
 
 
 def publish_heading(h, ART, WEB):
