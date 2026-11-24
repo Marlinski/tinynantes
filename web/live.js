@@ -118,9 +118,40 @@ function along(shape, d) {
            ang: Math.atan2(b[1] - a[1], b[0] - a[0]) };
 }
 const ease = (f) => f * f * (3 - 2 * f);
+// A rigid vehicle on its route: two bogies (axles) on the line, `front` and `front - L` along it; the body sits
+// between them along the chord, so it turns smoothly through bends and trailing cars follow the head's path.
+function chord(shape, front, L) {
+  const a = along(shape, front), b = along(shape, front - L);
+  const dx = a.x - b.x, dy = a.y - b.y;
+  const ang = Math.hypot(dx, dy) > 0.5 ? Math.atan2(dy, dx) : a.ang;
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2, ang };
+}
 
 // Where a transit vehicle is at time t; `stop` is the index (in v.names) of the stop it stands at, if any.
+// Positions come from timetables + realtime delays; when a refresh changes a delay, the computed position jumps.
+// Keep the drawn distance along the shape continuous: the gap is absorbed over ~1.5 s (teleports beyond 400 m).
+const poseSmooth = new Map();          // vehicle id -> {shape, off, t}
 function vehiclePose(v, t) {
+  const p = rawPose(v, t);
+  const k = v.id ?? v.trip;
+  let m = poseSmooth.get(k);
+  if (!m || m.shape !== v.shape) { m = { shape: v.shape, d: p.d, off: 0, t, target: p.d }; poseSmooth.set(k, m); }
+  if (t !== m.t) {
+    const dt = t - m.t;
+    if (dt > 0) {
+      const shown = m.target + m.off;                 // where it was drawn
+      m.off = shown - p.d;                             // keep it there...
+      if (Math.abs(m.off) > 400) m.off = 0;
+      m.off *= Math.exp(-dt / 1.5);                    // ...and let it join the computed position
+    }
+    m.t = t; m.target = p.d;
+  }
+  if (Math.abs(m.off) < 0.05) return p;
+  const q = along(world.shapes[v.shape], p.d + m.off);
+  q.stop = p.stop; q.d = p.d + m.off;
+  return q;
+}
+function rawPose(v, t) {
   const sh = world.shapes[v.shape], n = v.arr.length;
   let d, stop = -1;
   if (t <= v.dep[0]) { d = sh.stops[v.k0]; stop = 0; }
@@ -179,11 +210,11 @@ function sendView() {
 }
 function inhabitants() {
   if (snaps.length < 2 || clockOff == null) return [];
-  const rt = Date.now() / 1000 + clockOff - 0.3;
+  const rt = Date.now() / 1000 + clockOff - 0.6;      // two server frames behind: jitter never runs us dry
   let i = snaps.length - 1;
   while (i > 0 && snaps[i - 1].at > rt) i--;
   const s0 = snaps[Math.max(0, i - 1)], s1 = snaps[i];
-  const f = s1.at > s0.at ? Math.max(0, Math.min(1.5, (rt - s0.at) / (s1.at - s0.at))) : 1;
+  const f = s1.at > s0.at ? Math.max(0, Math.min(1.2, (rt - s0.at) / (s1.at - s0.at))) : 1;
   const out = [];
   for (const [id, b] of s1.m) {
     const a = s0.m.get(id);
@@ -290,12 +321,23 @@ async function loadSprites() {
 const SPRITE_CARS = ["car_white_hatch", "car_black_sedan", "car_grey_suv", "car_red_hatch", "car_blue_sedan",
   "car_silver_van", "car_green_hatch", "car_yellow_sedan"];
 // draw sprite `name` with its ground centre at world (x, y, z), heading ang; false if not available
-function sprite(name, x, y, z, ang) {
+const spriteDir = new Map();            // key -> direction shown last (hysteresis: no flipping on a boundary)
+function sprite(name, x, y, z, ang, key) {
   const A = sprites.atlas, e = A?.[name];
   if (!e) return false;
   const im = sprites.sheets[e.sheet];
   if (!im?.complete || !im.naturalWidth) return false;
-  const k = ((Math.round(ang / (2 * Math.PI) * A.dirs) % A.dirs) + A.dirs) % A.dirs;
+  const f = ang / (2 * Math.PI) * A.dirs;
+  let k = ((Math.round(f) % A.dirs) + A.dirs) % A.dirs;
+  if (key != null) {
+    const prev = spriteDir.get(key);
+    if (prev != null) {
+      let dd = f - prev; dd -= Math.round(dd / A.dirs) * A.dirs;      // signed distance in directions
+      if (Math.abs(dd) < 0.75) k = prev;                               // stay until clearly past the boundary
+    }
+    spriteDir.set(key, k);
+    if (spriteDir.size > 20000) spriteDir.clear();
+  }
   const [cx, cy, w, h, ax, ay] = e.cells[k];
   const sc = TN.view.s * TN.dpr / e.ppm;
   const [X, Y] = toCanvas(...project(x, y, z));
@@ -342,23 +384,25 @@ function transitItems(t, rect) {
     if (r.type === 0) {
       // articulated tram: 4 cars following the track, the head at the pose
       const sh = world.shapes[v.shape];
-      const segs = [0, 1, 2, 3].map((k) => along(sh, p.d - (k + 0.5) * TRAM_SEG));
+      const segs = [0, 1, 2, 3].map((k) => chord(sh, p.d - k * TRAM_SEG - 0.6, TRAM_SEG - 1.2));
       const back = Math.min(...segs.map((q) => project(q.x, q.y, q.z)[1]));
       out.push({ sx, sy: back - 0.05, h: 0, draw: () => segs.forEach((q) => shadow(q.x, q.y, q.z, q.ang, TRAM_SEG, 2.65)) });
       for (let k = 0; k < 4; k++) {
         const q = segs[k];
         const [qx, qy] = project(q.x, q.y, q.z);
         out.push({ sx: qx, sy: qy, h: 3.3, light: 2, draw: () => {
-                     if (!sprite(k === 0 ? "tram_head" : "tram_mid", q.x, q.y, q.z, q.ang)) coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color); },
+                     if (!sprite(k === 0 ? "tram_head" : "tram_mid", q.x, q.y, q.z, q.ang, `${v.id}:${k}`)) coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color); },
                    hit: k === 0 ? hit : null, tip: k === 0 ? tip : null });
       }
     } else if (r.type === 4) {
       out.push({ sx, sy, h: 2.5, draw: () => { shadow(p.x, p.y, p.z, p.ang, 18, 5);
-        if (sprite("navibus", p.x, p.y, p.z, p.ang)) return;
+        if (sprite("navibus", p.x, p.y, p.z, p.ang, v.id)) return;
         box(p.x, p.y, p.z, p.ang, 18, 5, 1.0, "#f4f1ea", "#2c5d8a", OUTLINE);                     // hull
         box(p.x, p.y, p.z + 1.0, p.ang, 9, 3.6, 1.6, "#ffffff", GLASS, OUTLINE); }, hit, tip }); // cabin
     } else {
-      out.push({ sx, sy, h: 3.0, light: 2, draw: () => { shadow(p.x, p.y, p.z, p.ang, 12, 2.55); if (!sprite("bus", p.x, p.y, p.z, p.ang)) coach(p.x, p.y, p.z, p.ang, 12, 2.55, 3.0, color); }, hit, tip });
+      const b = chord(world.shapes[v.shape], p.d + 6, 12);          // a 12 m bus on its two axles
+      out.push({ sx, sy, h: 3.0, light: 2, draw: () => { shadow(b.x, b.y, b.z, b.ang, 12, 2.55);
+        if (!sprite("bus", b.x, b.y, b.z, b.ang, v.id)) coach(b.x, b.y, b.z, b.ang, 12, 2.55, 3.0, color); }, hit, tip });
     }
   }
   return out;
@@ -394,11 +438,11 @@ function inhabitantItems(t, rect) {
     const hit = { r: 10, open: () => live.open?.("agent", { id }) };
     if (k === 0) out.push({ sx, sy, h: 1.5, light: 1, hit, draw: () => {
       shadow(x, y, z, a, 4.3, 1.8);
-      if (!sprite(SPRITE_CARS[c % SPRITE_CARS.length], x, y, z, a)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
+      if (!sprite(SPRITE_CARS[c % SPRITE_CARS.length], x, y, z, a, id)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
     else if (TN.view.s >= 1.6 || TN.playing) {
       const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;
       const name = k === 2 ? `bike_${c % 8}` : `walker_${c % 8}_${v > 0.2 ? Math.floor(now * v * 1.6 + id) % 2 : 0}`;
-      out.push({ sx, sy, h: 2, hit, draw: () => { if (!sprite(name, x, y, z, a)) personModel(x, y, z, a, col, phase, k === 2); } });
+      out.push({ sx, sy, h: 2, hit, draw: () => { if (!sprite(name, x, y, z, a, id)) personModel(x, y, z, a, col, phase, k === 2); } });
     }
   }
   return out;
