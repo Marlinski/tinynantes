@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import math
 import time
 from pathlib import Path
@@ -71,6 +72,14 @@ def _wms(layer, bbox, w, h, fmt):
     })
 
 
+def _atomic(f, write):
+    """Write a cache file under a temporary name, then rename it: several processes (renders, world build,
+    painting) read the same chunks, and must never see one half written."""
+    tmp = f.with_name(f".{f.stem}.{os.getpid()}.tmp{f.suffix}")
+    write(tmp)
+    os.replace(tmp, f)
+
+
 def chunk(kind: str, cx: int, cy: int):
     """Return one chunk as a numpy array (row 0 = north)."""
     d = CACHE / kind
@@ -82,13 +91,14 @@ def chunk(kind: str, cx: int, cy: int):
         if not f.exists():
             n = int(CHUNK / DEM_RES)
             a = np.frombuffer(_wms(LAYERS[kind], bbox, n, n, "image/x-bil;bits=32"), "<f4").reshape(n, n).copy()
-            np.save(f, a)
+            _atomic(f, lambda t: np.save(t, a))
         return np.load(f)
     if kind == "ortho":
         f = d / f"{cx}_{cy}.jpg"
         if not f.exists():
             n = int(CHUNK / ORTHO_RES)
-            f.write_bytes(_wms(LAYERS[kind], bbox, n, n, "image/jpeg"))
+            data = _wms(LAYERS[kind], bbox, n, n, "image/jpeg")
+            _atomic(f, lambda t: t.write_bytes(data))
         return np.asarray(Image.open(f).convert("RGB"))
     if kind == "cls":
         f = d / f"{cx}_{cy}.png"
@@ -98,12 +108,13 @@ def chunk(kind: str, cx: int, cy: int):
             code = np.zeros(rgb.shape[:2], "u1")
             for c, v in CLS_COLORS.items():
                 code[(rgb == c).all(-1)] = v
-            Image.fromarray(code).save(f)
+            _atomic(f, lambda t: Image.fromarray(code).save(t))
         return np.asarray(Image.open(f))
     if kind in WFS_LAYERS:
         f = d / f"{cx}_{cy}.png"
         if not f.exists():
-            _polygon_mask(bbox, WFS_LAYERS[kind]).save(f)
+            m = _polygon_mask(bbox, WFS_LAYERS[kind])
+            _atomic(f, lambda t: m.save(t))
         return np.asarray(Image.open(f)) > 0
     raise ValueError(kind)
 
@@ -196,7 +207,7 @@ def _rail_chunk(cx, cy):
                 out.append({"id": p.get("cleabs"), "nature": p.get("nature"), "tracks": p.get("nombre_de_voies") or 1,
                             "level": str(p.get("position_par_rapport_au_sol") or "0"),
                             "xy": [[round(c[0], 2), round(c[1], 2)] for c in line]})
-        f.write_text(json.dumps(out))
+        _atomic(f, lambda t: t.write_text(json.dumps(out)))
     return json.loads(f.read_text())
 
 
@@ -249,7 +260,7 @@ def _building_chunk(cx, cy):
                     "usage": p.get("usage_1"), "nature": p.get("nature"),
                     "light": bool(p.get("construction_legere")), "year": (p.get("date_d_apparition") or "")[:4],
                 })
-        f.write_text(json.dumps(out))
+        _atomic(f, lambda t: t.write_text(json.dumps(out)))
     return json.loads(f.read_text())
 
 
@@ -279,7 +290,7 @@ def _sport_chunk(cx, cy):
                 out.append({"id": f'{p.get("cleabs")}#{k}', "nature": p.get("nature"),
                             "detail": p.get("nature_detaillee"),
                             "rings": [[[round(c[0], 2), round(c[1], 2)] for c in ring] for ring in poly]})
-        f.write_text(json.dumps(out))
+        _atomic(f, lambda t: t.write_text(json.dumps(out)))
     return json.loads(f.read_text())
 
 

@@ -40,25 +40,53 @@ def _dirs(h):
     return src, src / "paint"
 
 
+def _roofs(a):
+    """Pixels that look like a roof or a building wall: red/orange tiles, or bright white/grey."""
+    a = a.astype("i4")
+    return ((a[..., 0] > a[..., 1] + 30) & (a[..., 0] > 110)) | ((a.min(-1) > 165) & (a.max(-1) - a.min(-1) < 30))
+
+
+def invented_buildings(art, ren, bm):
+    """Share of the tile painted as buildings where neither BD TOPO nor the render has one: the model likes to
+    build villages in woods and towers in fields."""
+    return float((_roofs(art) & ~bm).mean() - (_roofs(ren) & ~bm).mean())
+
+
+RURAL_BELOW = 0.4      # tiles whose core is less covered by (grown) real buildings get the countryside prompt
+INVENTED_MAX = 0.015
+
+
 def paint_one(h, i, j):
     src, dst = _dirs(h)
     f = dst / f"{i}_{j}.png"
     if f.exists():
         return False
     ren = Image.open(src / f"{i}_{j}.png").convert("RGB")
-    for attempt in range(3):
+    rn = np.asarray(ren)
+    bm = g3d.building_mask(i, j, geo.View(h))
+    rural = bm[M:-M, M:-M].mean() < RURAL_BELOW
+    best = None
+    for attempt in range(4):
+        variant = "g9b_rural" if rural or attempt >= 2 else VARIANT
         try:
-            art = np.asarray(paint(VARIANT, ren, seed=SEED + attempt))
-            break
+            art = np.asarray(paint(variant, ren, seed=SEED + attempt))
         except Exception as e:
             print(f"{i}_{j} attempt {attempt}: {e}", flush=True)
             if "balance" in str(e).lower() or "locked" in str(e).lower():
                 raise SystemExit("fal balance exhausted")
             time.sleep(5)
-    else:
+            continue
+        bad = invented_buildings(art, rn, bm)
+        if best is None or bad < best[0]:
+            best = (bad, art)
+        if bad <= INVENTED_MAX:
+            break
+        print(f"{i}_{j}: {bad:.3f} of the tile invented ({variant}), repainting", flush=True)
+    if best is None:
         return False
+    art = best[1]
     wm = g3d.water_mask(i, j, geo.View(h))
-    art = unify_water(fix_invented_water(art, wm, np.asarray(ren)), wm)
+    art = unify_water(fix_invented_water(art, wm, rn), wm)
     rf = src / f"{i}_{j}_rails.png"
     art = g3d.overlay_rails(art, Image.open(rf) if rf.exists() else None)
     dst.mkdir(parents=True, exist_ok=True)

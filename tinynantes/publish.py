@@ -48,6 +48,13 @@ PLACES = [
     ("Pont Anne-de-Bretagne", -1.5661, 47.20818),
     ("Grue Titan jaune", -1.56975, 47.20509),
     ("CHU Hôtel-Dieu", -1.5534, 47.21044),
+    # Saint-Herblain and the airport (positions from OSM)
+    ("Zénith Nantes Métropole", -1.62797, 47.22871),
+    ("Atlantis le Centre", -1.63229, 47.22442),
+    ("Onyx", -1.62919, 47.22383),
+    ("Hôtel de Ville de Saint-Herblain", -1.64842, 47.21124),
+    ("Château de la Gournerie", -1.63771, 47.24596),
+    ("Airbus Nantes", -1.59995, 47.18867),
 ]
 
 

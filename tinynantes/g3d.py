@@ -461,27 +461,47 @@ if __name__ == "__main__":
     main(sys.argv[1:])
 
 
-def water_mask(i, j, view=geo.View(0), margin_px=128):
-    """Where real water (BD TOPO hydrography, at terrain height) lands on the tile render, as a bool image
-    the size of the render. Occlusion is ignored: the mask only says where water is allowed."""
-    from scipy import ndimage
+def _projected_mask(kind, z_kind, i, j, view, margin_px):
+    """Pixels of the tile render (with its margin) where the BD TOPO layer `kind` lands, each ground cell drawn
+    at the height of the `z_kind` model (mnt: the ground, mns: the surface, i.e. roofs). Occlusion ignored."""
     from . import ign
     T = geo.TILE_M
     mm = margin_px * geo.M_PER_PX
-    pad = 4.0 + mm
+    pad = 4.0 + mm + (40.0 if z_kind == "mns" else 0.0)     # roofs project up the screen: look further south
     bbox = view.ground_bbox(i * T - pad, j * T - pad, (i + 1) * T + pad, (j + 1) * T + pad)
-    eau, (gx0, gy1), res = ign.mosaic("eau", bbox)
-    mnt, _, _ = ign.mosaic("mnt", bbox)
-    rr, cc = np.nonzero(eau > 0)
+    m, (gx0, gy1), res = ign.mosaic(kind, bbox)
+    z, _, _ = ign.mosaic(z_kind, bbox)
+    rr, cc = np.nonzero(m > 0)
     size = geo.TILE_PX + 2 * margin_px
     out = np.zeros((size, size), bool)
     if not len(rr):
         return out
     x = gx0 - geo.ORIGIN[0] + (cc + 0.5) * res
     y = gy1 - geo.ORIGIN[1] - (rr + 0.5) * res
-    sx, sy, _ = view.to_screen(x, y, mnt[rr, cc])
+    sx, sy, _ = view.to_screen(x, y, z[rr, cc])
     px = ((sx - i * T + mm) / geo.M_PER_PX).astype(int)
     py = ((sy - j * T + mm) / geo.M_PER_PX).astype(int)
     k = (px >= 0) & (px < size) & (py >= 0) & (py < size)
     out[py[k], px[k]] = True
+    return out
+
+
+def water_mask(i, j, view=geo.View(0), margin_px=128):
+    """Where real water (BD TOPO hydrography, at terrain height) lands on the tile render, as a bool image
+    the size of the render. Occlusion is ignored: the mask only says where water is allowed."""
+    from scipy import ndimage
+    out = _projected_mask("eau", "mnt", i, j, view, margin_px)
     return ndimage.binary_closing(ndimage.binary_dilation(out, iterations=2), iterations=3)
+
+
+def building_mask(i, j, view=geo.View(0), margin_px=128, grow_px=24):
+    """Where real buildings (BD TOPO footprints drawn at roof height, grown by grow_px to cover their walls and
+    the projection's slack) land on the tile render."""
+    from scipy import ndimage
+    out = _projected_mask("bati", "mns", i, j, view, margin_px)
+    out = ndimage.binary_closing(out, iterations=2)
+    if not out.any():
+        return out
+    # walls hang below the roof on screen: grow downwards more than sideways
+    out = ndimage.binary_dilation(out, structure=np.ones((3 * grow_px, 1), bool), origin=(-grow_px, 0))
+    return ndimage.binary_dilation(out, iterations=grow_px)

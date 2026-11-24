@@ -37,6 +37,11 @@ VARIANTS = {
     "g9b": ("fal-ai/flux-2/klein/9b/edit", {"prompt": (
         "Repaint this 3D city render as a detailed isometric pixel-art city map. Keep every street, building, "
         "roof colour, tree and body of water exactly where it is. Do not add or remove anything.")}),
+    # for outskirts tiles (few real buildings): the city prompt makes the model build towns in fields and woods
+    "g9b_rural": ("fal-ai/flux-2/klein/9b/edit", {"prompt": (
+        "Repaint this 3D aerial render as a detailed isometric pixel-art map of the countryside on the edge of a "
+        "city. Keep every field, hedge, wood, road, path and house exactly where it is, with the same shapes and "
+        "colours. Do not add any building, village, tower or pond: empty fields and forests stay empty.")}),
     "crisp": ("fal-ai/flux-2/klein/9b/edit", {"prompt": (
         "Repaint this 3D city render as crisp isometric pixel art with clean dark outlines and flat colours, "
         "like a hand-made pixel-art city map. Keep every street, track, building, roof colour, tree and body of "

@@ -26,7 +26,19 @@ Z_MIN, Z_MAX = -5.0, 110.0      # absolute height range we expect (m, NGF)
 
 # Mapped area (Lambert-93 bbox): 6 x 6 km inner ring, from Chantenay to Doulon,
 # up the Erdre to the university and down to north Rezé. (v1 was 354000, 6686800, 357500, 6690300.)
-AREA = (352500.0, 6685500.0, 358500.0, 6691500.0)
+CORE = (352500.0, 6685500.0, 358500.0, 6691500.0)
+# Extensions (2026-11-24): Saint-Herblain (Bellevue, Atlantis, the bourg, up to the Solvardière) and, south of the
+# Loire, Bouguenais north down to Nantes Atlantique airport (terminal and runway).
+SAINT_HERBLAIN = (346500.0, 6687000.0, 352500.0, 6693500.0)
+AIRPORT = (349300.0, 6680900.0, 353000.0, 6687000.0)
+AREAS = (CORE, SAINT_HERBLAIN, AIRPORT)
+# Bounding box of every area: what the data fetches (OSM, terrain) cover.
+AREA = (min(a[0] for a in AREAS), min(a[1] for a in AREAS), max(a[2] for a in AREAS), max(a[3] for a in AREAS))
+
+
+def inside(x, y, margin=0.0):
+    """Whether a Lambert-93 point lies in one of the mapped areas (grown by margin metres)."""
+    return any(a[0] - margin <= x <= a[2] + margin and a[1] - margin <= y <= a[3] + margin for a in AREAS)
 
 
 @dataclass(frozen=True)
@@ -69,8 +81,13 @@ class View:
         return (pts[:, 0].min() + ORIGIN[0], pts[:, 1].min() + ORIGIN[1],
                 pts[:, 0].max() + ORIGIN[0], pts[:, 1].max() + ORIGIN[1])
 
-    def tiles_for_area(self, area=AREA, z=10.0):
-        """Tile indices whose screen rect sees any of the area (at ground height z)."""
+    def tiles_for_area(self, area=None, z=10.0):
+        """Tile indices whose screen rect sees any of the area (at ground height z); every mapped area if None."""
+        if area is None:
+            seen = []
+            for a in AREAS:
+                seen += [t for t in self.tiles_for_area(a, z) if t not in seen]
+            return seen
         x0, y0, x1, y1 = area
         xs = np.array([x0, x1, x0, x1]) - ORIGIN[0]
         ys = np.array([y0, y0, y1, y1]) - ORIGIN[1]

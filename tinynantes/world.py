@@ -141,6 +141,11 @@ def osm():
             del r["pts"]
     for p in pois:
         p["x"], p["y"] = (round(v, 2) for v in _to_l93.transform(p["lon"], p["lat"]))
+    # the bbox prefilter above spans every area: drop what only touches the unmapped corners (south Rezé...)
+    near = lambda xy: any(geo.inside(x, y, MARGIN) for x, y in xy)
+    roads = [r for r in roads if near(r["xy"])]
+    rails = [r for r in rails if near(r["xy"])]
+    pois = [p for p in pois if geo.inside(p["x"], p["y"])]
     out = {"roads": roads, "rails": rails, "pois": pois}
     (LIVE / "osm_area.json").write_text(json.dumps(out))
     print(f"osm: {len(roads)} roads, {len(rails)} rail/tram ways, {len(pois)} POIs", flush=True)
@@ -271,7 +276,7 @@ def transit():
         lon = [p[1] for p in pts]; lat = [p[2] for p in pts]
         xs, ys = _to_l93.transform(lon, lat)
         P = list(zip(xs, ys))
-        if not any(x0 <= x <= x1 and y0 <= y <= y1 for x, y in P):
+        if not any(geo.inside(x, y) for x, y in P):
             continue
         rt = routes[shape_route.get(sid, "")]["route_type"] if shape_route.get(sid) in routes else "3"
         g = tram_g if rt == "0" else (bus_g if rt == "3" else None)
@@ -350,7 +355,7 @@ def export():
     for s in _read("stops.txt"):
         if s["location_type"] == "1":
             x, y = _to_l93.transform(float(s["stop_lon"]), float(s["stop_lat"]))
-            if area()[0] <= x <= area()[2] and area()[1] <= y <= area()[3]:
+            if geo.inside(x, y):
                 stops.append({"id": s["stop_id"], "name": s["stop_name"], "p": rel([[x, y]])[0]})
     used = {v["route"] for v in shapes.values()}
     tr = {"routes": [r for k, r in routes.items() if k in used],
@@ -401,6 +406,8 @@ def nav():
         for cy in cys:
             bx0, by0 = cx * NAV_CHUNK, cy * NAV_CHUNK
             bbox = (bx0, by0, bx0 + NAV_CHUNK, by0 + NAV_CHUNK)
+            if not geo.inside(bx0 + NAV_CHUNK / 2, by0 + NAV_CHUNK / 2, 300 + NAV_CHUNK / 2):
+                continue                                   # unmapped corner of the bounding box
             if (out / f"{cx}_{cy}.png").exists():
                 count += 1
                 continue
@@ -494,11 +501,10 @@ def rail_routes():
         for m, L in g.adj[n]:
             if d + L < dist.get(m, 1e18):
                 dist[m] = d + L; prev[m] = n; heapq.heappush(q, (d + L, m))
-    x0, y0, x1, y1 = geo.AREA
     best = {}
     for n, d in dist.items():
         x, y = g.xy[n]
-        if x0 <= x <= x1 and y0 <= y <= y1:
+        if geo.inside(x, y):
             continue
         ang = round(math.degrees(math.atan2(y - st[1], x - st[0])) / 20)
         if ang not in best or d < best[ang][1]:
