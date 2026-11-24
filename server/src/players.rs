@@ -47,6 +47,14 @@ pub struct Player {
     pub m: String,
     #[serde(skip)]
     pub seen: Option<Instant>,
+    /// speed as the server sees it (from successive positions), m/s, and the highest in the last 2 s:
+    /// a client claiming a crash must have been seen going that fast
+    #[serde(skip)]
+    pub speed: f32,
+    #[serde(skip)]
+    pub peak: (f64, f32),
+    /// server time of this position (s): clients interpolate others on it, not on when packets arrive
+    pub t: f64,
 }
 
 impl Players {
@@ -58,6 +66,18 @@ impl Players {
         let active = db.query_row("SELECT COUNT(DISTINCT name) FROM sessions WHERE created >= ?1",
             params![now() - secs], |r| r.get(0)).unwrap_or(0);
         (online, users, active)
+    }
+
+    /// Everyone online: (name, x, y, mode).
+    pub async fn positions(&self) -> Vec<(String, f64, f64, String)> {
+        self.online.read().await.values().map(|q| (q.name.clone(), q.x, q.y, q.m.clone())).collect()
+    }
+
+    /// The fastest a player was seen moving in the last 2 s, and how they move now (car, bike, heli, walk...).
+    pub async fn motion_of(&self, name: &str) -> Option<(f32, String)> {
+        let t = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        self.online.read().await.values().find(|q| q.name == name)
+            .map(|q| (if t - q.peak.0 < 2.5 { q.peak.1.max(q.speed) } else { q.speed }, q.m.clone()))
     }
 
     /// The name behind a session token.
@@ -287,7 +307,19 @@ async fn session(p: Arc<Players>, sock: WebSocket, name: String, ip: String) {
                         pos_budget.1 += 1;
                         if pos_budget.1 > 15 || !(x.is_finite() && y.is_finite() && z.is_finite() && a.is_finite()) { continue; }
                         let m: String = m.chars().take(8).collect();
-                        p.online.write().await.insert(id, Player { id, name: name.clone(), x, y, z, a, m, seen: Some(Instant::now()) });
+                        let t = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+                        let mut on = p.online.write().await;
+                        let (mut speed, mut peak) = (0.0f32, (t, 0.0f32));
+                        if let Some(q) = on.get(&id) {
+                            let dt = t - q.t;
+                            if dt > 0.03 && dt < 3.0 {
+                                let v = (((x - q.x).powi(2) + (y - q.y).powi(2)).sqrt() / dt) as f32;
+                                // a jump (got off a tram, thrown out of a car, a teleport) isn't speed
+                                speed = if v > 80.0 { 0.0 } else { q.speed * 0.4 + v * 0.6 };
+                            }
+                            peak = if t - q.peak.0 < 2.0 && q.peak.1 > speed { q.peak } else { (t, speed) };
+                        }
+                        on.insert(id, Player { id, name: name.clone(), x, y, z, a, m, seen: Some(Instant::now()), speed, peak, t });
                     }
                     In::Chat { text } => {
                         let text: String = text.trim().chars().filter(|c| !c.is_control()).take(280).collect();
@@ -331,7 +363,8 @@ async fn tick(p: Arc<Players>) {
             continue;
         }
         let list: Vec<&Player> = on.values().collect();
-        let _ = p.tx.send(serde_json::json!({"t": "players", "list": list}).to_string().into());
+        let at = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        let _ = p.tx.send(serde_json::json!({"t": "players", "at": at, "list": list}).to_string().into());
     }
 }
 

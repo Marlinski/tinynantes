@@ -13,7 +13,7 @@ const TN = window.TN;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const COS45 = Math.SQRT1_2;
-const SPEED = { walk: 1.6, run: 5.0, bike: 8.0, car: 20, heli: 50 };   // m/s; running is the default, Shift walks
+const SPEED = { walk: 1.6, run: 5.0, bike: 11.0, car: 34, heli: 50 };   // m/s; running is the default, Shift walks
 const HELIPORT = [-421.1, -751.1];                                     // CHU Nantes heliport (OSM), on the Hôtel-Dieu roof
 const SPRITE = 3.2;                          // people and bikes are drawn larger than life, or they'd be 4 px tall
 const F_BUILDING = 1, F_WATER = 2, F_ROAD = 4, F_FOOT = 8;
@@ -25,7 +25,7 @@ const others = new Map();                     // id -> { name, x, y, z, a, m, fr
 const keys = new Set();
 let joy = null;                               // touch joystick vector [-1..1]
 let lastSend = 0, sentAt = [0, 0];
-window.TNGame = { me, others, navAt, walkable };       // for debugging from the console
+window.TNGame = { me, others, navAt, walkable, curPos };       // for debugging from the console
 
 // ---------------------------------------------------------------- side panel
 const side = $("side"), sideBody = $("sideBody");
@@ -352,8 +352,13 @@ function connect() {
         if (p.id === myId) continue;
         seen.add(p.id);
         let o = others.get(p.id);
-        if (!o) { o = { ...p, from: [p.x, p.y, p.z], to: [p.x, p.y, p.z], t0: now, color: colorFor(p.name) }; others.set(p.id, o); }
-        o.from = curPos(o, now); o.to = [p.x, p.y, p.z]; o.t0 = now; o.a = p.a; o.m = p.m; o.name = p.name;
+        if (!o) { o = { ...p, buf: [], color: colorFor(p.name) }; others.set(p.id, o); }
+        // a buffer of timestamped states (server time); drawn a little in the past, see curPos
+        const t = p.t || m.at || now / 1000, last = o.buf[o.buf.length - 1];
+        if (!last || t > last.t) o.buf.push({ t, x: p.x, y: p.y, z: p.z, a: p.a });
+        while (o.buf.length > 12) o.buf.shift();
+        o.m = p.m; o.name = p.name;
+        if (m.at) playersOff = playersOff == null ? m.at - Date.now() / 1000 : Math.min(m.at - Date.now() / 1000, playersOff + 0.002);
       }
       for (const id of others.keys()) if (!seen.has(id)) others.delete(id);
     } else if (m.t === "leave") others.delete(m.id);
@@ -372,9 +377,33 @@ function connect() {
     setTimeout(() => TN.playing && !ws && connect(), 3000);
   };
 }
-function curPos(o, now) {
-  const f = Math.min(1, (now - o.t0) / 220);
-  return o.from.map((v, k) => v + (o.to[k] - v) * f);
+// Other players: entity interpolation (as in Source/Quake netcode). Their states carry the server time; we draw
+// them DELAY behind the newest, between the two states around that moment (cubic Hermite with the velocities
+// from neighbouring states, so turns are smooth and speed doesn't pulse), and when a packet is late we keep
+// going along the last velocity for up to 0.4 s (dead reckoning) instead of freezing, then ease back.
+let playersOff = null;                  // server clock - local clock (smallest seen: the least delayed packet)
+const DELAY = 0.25;
+function curPos(o) {
+  const b = o.buf;
+  if (!b?.length) return [o.x, o.y, o.z];
+  const rt = Date.now() / 1000 + (playersOff ?? 0) - DELAY;
+  let i = b.length - 1;
+  while (i > 0 && b[i - 1].t > rt) i--;
+  if (i === 0 || b.length === 1) { const s = b[0]; o.a = s.a; return [s.x, s.y, s.z]; }
+  const s0 = b[i - 1], s1 = b[i];
+  if (rt > s1.t) {                                         // starved: extrapolate a little
+    const dt = Math.min(0.4, rt - s1.t), h = Math.max(0.05, s1.t - s0.t);
+    o.a = s1.a;
+    return [s1.x + (s1.x - s0.x) / h * dt, s1.y + (s1.y - s0.y) / h * dt, s1.z];
+  }
+  const h = Math.max(0.01, s1.t - s0.t), f = (rt - s0.t) / h;
+  const sp = b[i - 2] || s0, sn = b[i + 1] || s1;
+  const vel = (a, c, k) => (c[k] - a[k]) / Math.max(0.01, c.t - a.t) * h;   // tangents scaled to the segment
+  const f2 = f * f, f3 = f2 * f;
+  const herm = (k) => (2 * f3 - 3 * f2 + 1) * s0[k] + (f3 - 2 * f2 + f) * vel(sp, s1, k) + (-2 * f3 + 3 * f2) * s1[k] + (f3 - f2) * vel(s0, sn, k);
+  let da = s1.a - s0.a; da = Math.atan2(Math.sin(da), Math.cos(da));
+  o.a = s0.a + da * f;
+  return [herm("x"), herm("y"), s0.z + (s1.z - s0.z) * f];
 }
 function sendPos(force) {
   if (!ws || ws.readyState !== 1) return;
@@ -382,7 +411,7 @@ function sendPos(force) {
   const moved = Math.hypot(me.x - sentAt[0], me.y - sentAt[1]) > 0.2;
   if (!force && (now - lastSend < 150 || (!moved && now - lastSend < 2000))) return;
   lastSend = now; sentAt = [me.x, me.y];
-  const m = me.ride ? me.ride.kind : me.mode;
+  const m = me.ride ? me.ride.kind : me.mode === "car" && me.car ? `car${me.car.model}` : me.mode;
   ws.send(JSON.stringify({ t: "pos", x: +me.x.toFixed(2), y: +me.y.toFixed(2), z: +me.z.toFixed(2), a: +me.a.toFixed(3), m }));
 }
 
@@ -430,6 +459,7 @@ function setMode(m) {
   if (room && m !== "walk") leave();
   if (m === "heli" && me.mode !== "heli") { me.alt = 0; me.vx = me.vy = 0; me.climb = 60; toast("Décollage ! Espace monter · C descendre"); }
   if (m !== "heli") me.alt = 0;
+  if (m === "car" && me.mode !== "car") me.car = carSpec(myCarModel());
   me.mode = m; me.v = 0; hud();
   $("altBtns").hidden = m !== "heli";
 }
@@ -470,6 +500,7 @@ function updateHint() {
   const el = $("hint");
   let txt = "", key = "";
   if (room) { key = "in:" + room.id; txt = `La carte · ${room.name}`; }
+  else if (TN.playing && !me.ride && me.mode === "walk" && nearestCar()) { key = "jack"; txt = "Voler la voiture"; }
   else if (TN.playing && !me.ride && me.mode !== "car") {
     const p = nearestPlace(me.x, me.y);
     if (p) { key = p.id; txt = `Entrer · ${p.t.name}`; }
@@ -733,6 +764,10 @@ function action() {
     toast(p ? `Descendu à ${v.names[p.stop] || "l'arrêt"}` : "Descendu");
     me.ride = null; me.mode = "walk"; me.v = 0; hud(); return;
   }
+  if (me.mode === "walk" && !room) {
+    const car = nearestCar();
+    if (car) { carjack(car); return; }
+  }
   if (me.mode !== "car") {
     let best = null, bd = 22;
     for (const v of live.vehicles) {
@@ -789,6 +824,7 @@ function step() {
     if (keys.has("KeyA") || keys.has("ArrowLeft")) ux -= 1;
     if (keys.has("KeyD") || keys.has("ArrowRight")) ux += 1;
     if (joy) { ux = joy[0]; uy = joy[1]; }
+    if (performance.now() < (me.dazed || 0)) ux = uy = 0;                // just thrown out of a burning car
     const slow = keys.has("ShiftLeft") || keys.has("ShiftRight") || (joy && Math.hypot(...joy) < 0.45);
     const run = !slow;
     if (me.mode === "heli") flyHeli(ux, uy, dt);
@@ -798,9 +834,10 @@ function step() {
       if (mag > 0.05) {
         const [wx, wy] = screenToWorldDir(ux, uy);
         const vmax = me.mode === "bike" ? SPEED.bike : run ? SPEED.run : SPEED.walk;
-        me.v = Math.min(vmax * mag, me.v + (me.mode === "bike" ? 6 : 14) * dt);
+        me.v = Math.min(vmax * mag, me.v + (me.mode === "bike" ? 9 : 14) * dt);
         me.a = Math.atan2(wy, wx);
-        if (!moveBy(wx * me.v * dt, wy * me.v * dt) || !walkable(me.mode, me.x + wx * 0.6, me.y + wy * 0.6))
+        if (solidAt(me.x + wx * me.v * dt, me.y + wy * me.v * dt, me.mode === "bike" ? 0.8 : 0.4)) me.v = 0;   // a car, a tram: in the way
+        else if (!moveBy(wx * me.v * dt, wy * me.v * dt) || !walkable(me.mode, me.x + wx * 0.6, me.y + wy * 0.6))
           bumpInto(me.x + wx * 0.8, me.y + wy * 0.8);
       } else me.v = Math.max(0, me.v - 8 * dt);
     }
@@ -808,7 +845,12 @@ function step() {
   }
   const [sx, sy] = live.project(me.x, me.y, me.z);
   const v = TN.view, k = 1 - Math.exp(-dt * 6);
-  TN.follow(v.x + (sx - v.x) * k, v.y + (sy - v.y) * k);
+  let jx = 0, jy = 0;
+  if (TN.shake > 0.1) {                                           // a crash shakes the view
+    jx = (Math.random() - 0.5) * TN.shake / v.s; jy = (Math.random() - 0.5) * TN.shake / v.s;
+    TN.shake *= Math.exp(-dt * 5);
+  }
+  TN.follow(v.x + (sx - v.x) * k + jx, v.y + (sy - v.y) * k + jy);
   sendPos();
   if (now - (step.hudAt || 0) > 500) { step.hudAt = now; hud(); }
   if (now - (step.hintAt || 0) > 250) {
@@ -833,19 +875,172 @@ function moveBy(dx, dy) {
   if (walkable(m, me.x, me.y + dy)) { me.y += dy; return true; }
   return false;
 }
-// GTA-style: up/down = throttle/brake-reverse, left/right = steer
+// GTA-style: up/down = throttle/brake-reverse, left/right = steer. Each model drives its own way (top speed,
+// pick-up, brakes, turning); everything hard stops the car (buildings, other cars, trams, buses, wrecks), and a
+// hit faster than FATAL blows it up.
 function driveCar(ux, uy, dt) {
+  const c = me.car || (me.car = carSpec(myCarModel()));
   const throttle = -uy, steer = -ux;
-  if (throttle > 0) me.v += (me.v < 0 ? 12 : 6.5) * throttle * dt;
-  else if (throttle < 0) me.v += (me.v > 0 ? 12 : 4) * throttle * dt;
-  else me.v -= Math.sign(me.v) * Math.min(Math.abs(me.v), 1.2 * dt);
+  if (throttle > 0) me.v += (me.v < 0 ? c.brake : c.acc * (1 - 0.55 * Math.max(0, me.v) / c.vmax)) * throttle * dt;
+  else if (throttle < 0) me.v += (me.v > 0 ? c.brake : 4) * throttle * dt;
+  else me.v -= Math.sign(me.v) * Math.min(Math.abs(me.v), 1.5 * dt);
   // off the carriageway (pavement, square, park): walking pace-ish; probe a little ahead so 1-cell gaps don't brake
   const ahead = onRoad(me.x, me.y) || onRoad(me.x + Math.cos(me.a) * 2, me.y + Math.sin(me.a) * 2);
-  me.v = Math.max(-4, Math.min(ahead ? SPEED.car : 5, me.v));
-  me.a += steer * dt * 1.3 * Math.min(1, Math.abs(me.v) / 4) * Math.sign(me.v || 1);
+  const lim = ahead ? c.vmax : 6;
+  if (me.v > lim) me.v = Math.max(lim, me.v - 18 * dt);
+  me.v = Math.max(-5, Math.min(c.vmax, me.v));
+  me.a += steer * dt * c.turn * Math.min(1, Math.abs(me.v) / 4) * Math.sign(me.v || 1) / (1 + Math.abs(me.v) / 30);
   const dx = Math.cos(me.a) * me.v * dt, dy = Math.sin(me.a) * me.v * dt;
-  if (walkable("car", me.x, me.y) && !walkable("car", me.x + dx, me.y + dy)) { me.v *= -0.25; return; }  // bump
-  me.x += dx; me.y += dy;
+  const nx = me.x + dx, ny = me.y + dy;
+  // a wall: the bumper (front or back, by the way we go) runs into a building
+  const dir = Math.sign(me.v || 1), bx = Math.cos(me.a) * dir * c.L / 2, by = Math.sin(me.a) * dir * c.L / 2;
+  const sx = -Math.sin(me.a) * c.W * 0.4, sy = Math.cos(me.a) * c.W * 0.4;
+  const wall = walkable("car", me.x, me.y) && [[bx + sx, by + sy], [bx - sx, by - sy], [bx, by]]
+    .some(([u, v]) => !walkable("car", nx + u, ny + v));
+  if (wall) {
+    if (Math.abs(me.v) > FATAL) return crash(null);
+    if (Math.abs(me.v) > 4) shake(Math.abs(me.v));
+    me.v *= -0.25; return;
+  }
+  // other vehicles, people
+  const hit = collide(nx, ny, me.a, c.L, c.W);
+  if (hit) {
+    const s = hit.s;
+    if (s.soft) {
+      if (s.kind !== "down" && Math.abs(me.v) > KNOCK) { knock(s); me.v *= 0.85; }
+      else if (s.kind !== "down") { me.v = 0; return; }       // slowly: they step aside, we wait
+    } else {
+      // closing speed along the contact normal, their own motion included
+      const vx = Math.cos(me.a) * me.v - (s.vx || 0), vy = Math.sin(me.a) * me.v - (s.vy || 0);
+      const closing = -(vx * hit.nx + vy * hit.ny);
+      if (closing > FATAL && s.kind !== "player") return crash(s);
+      if (closing > 4) shake(closing);
+      me.v *= -0.3;
+      me.x += hit.nx * Math.min(0.5, hit.depth); me.y += hit.ny * Math.min(0.5, hit.depth);   // pushed back out
+      return;
+    }
+  }
+  me.x = nx; me.y = ny;
+}
+
+// ---------------------------------------------------------------- physics: vehicles, collisions, crashes
+const FATAL = 15;             // m/s (54 km/h): a hit on something hard above this, and the car blows up
+const KNOCK = 4;              // m/s: hitting someone on foot faster than this knocks them down
+// the player's cars: the inhabitants' models (live.js TRAFFIC, the variant byte of their cars), each with its handling
+function carSpec(model) {
+  const T = live.TRAFFIC[model % live.TRAFFIC.length], n = T[0];
+  const h = /truck/.test(n) ? { vmax: 24, acc: 3.8, brake: 7, turn: 0.75, label: "camion" }
+    : /van/.test(n) ? { vmax: 29, acc: 5.5, brake: 9, turn: 0.95, label: "utilitaire" }
+    : /suv/.test(n) ? { vmax: 36, acc: 8.5, brake: 12, turn: 1.1, label: "SUV" }
+    : /taxi/.test(n) ? { vmax: 38, acc: 9.5, brake: 13, turn: 1.25, label: "taxi" }
+    : /sedan/.test(n) ? { vmax: 42, acc: 10.5, brake: 13, turn: 1.2, label: "berline" }
+    : { vmax: 36, acc: 11, brake: 13, turn: 1.45, label: "citadine" };
+  return { model: model % live.TRAFFIC.length, name: n, L: T[1], W: T[2], ...h };
+}
+function myCarModel() {                                     // your own car: always the same one for your name
+  const hsh = [...String(session?.name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
+  return Math.max(0, live.TRAFFIC.findIndex((t) => t[0] === live.SPRITE_CARS[hsh % 8]));
+}
+// what's around, for a few frames: the inhabitants' vehicles and people, trams and buses, other players
+let solidsCache = { t: 0, x: 1e9, y: 1e9, list: [] };
+function solidsNear(x, y) {
+  const now = performance.now();
+  if (now - solidsCache.t > 60 || Math.hypot(x - solidsCache.x, y - solidsCache.y) > 8) {
+    const list = live.solids(x, y, 40);
+    for (const o of others.values()) {
+      const [ox, oy] = curPos(o, now);
+      if (Math.abs(ox - x) > 40 || Math.abs(oy - y) > 40 || o.m === "heli" || ["tram", "bus", "navibus"].includes(o.m)) continue;
+      const car = /^car/.test(o.m || "");
+      list.push({ x: ox, y: oy, ang: o.a, L: car ? 4.3 : 0.5, W: car ? 1.8 : 0.5, kind: "player", soft: !car });
+    }
+    solidsCache = { t: now, x, y, list };
+  }
+  return solidsCache.list;
+}
+// a box as discs along its length
+function discs(x, y, ang, L, W) {
+  const n = Math.max(1, Math.round(L / W)), r = W / 2, c = Math.cos(ang), s = Math.sin(ang), out = [];
+  for (let k = 0; k < n; k++) {
+    const u = n === 1 ? 0 : -(L - W) / 2 + (L - W) * k / (n - 1);
+    out.push([x + c * u, y + s * u, Math.max(r, n === 1 ? L / 2 : r)]);
+  }
+  return out;
+}
+// the deepest overlap of a box at (x, y) with anything around: { s, nx, ny (pushing us out), depth }
+function collide(x, y, ang, L, W) {
+  const mine = discs(x, y, ang, L, W);
+  let best = null;
+  for (const s of solidsNear(x, y)) {
+    if (Math.abs(s.x - x) > 16 || Math.abs(s.y - y) > 16) continue;
+    for (const [ax, ay, ar] of mine) for (const [bx, by, br] of discs(s.x, s.y, s.ang, s.L, s.W)) {
+      const dx = ax - bx, dy = ay - by, d = Math.hypot(dx, dy), depth = ar + br - d;
+      if (depth > 0 && (!best || depth > best.depth)) best = { s, nx: d > 1e-3 ? dx / d : 1, ny: d > 1e-3 ? dy / d : 0, depth };
+    }
+  }
+  return best;
+}
+// walking / cycling: is something hard (a car, a tram) at (x, y)?
+function solidAt(x, y, r) {
+  for (const s of solidsNear(x, y)) {
+    if (s.soft || Math.abs(s.x - x) > 10 || Math.abs(s.y - y) > 10) continue;
+    for (const [bx, by, br] of discs(s.x, s.y, s.ang, s.L, s.W)) if (Math.hypot(x - bx, y - by) < r + br) {
+      // already inside it (it drove into us): let us walk out
+      return !discs(s.x, s.y, s.ang, s.L, s.W).some(([cx, cy, cr]) => Math.hypot(me.x - cx, me.y - cy) < r + cr);
+    }
+  }
+  return false;
+}
+function shake(v) { TN.shake = Math.min(14, v * 0.6); }
+async function impact(body) {
+  if (!session) return null;
+  try {
+    const r = await fetch("api/impact", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: session.token, ...body }) });
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+// the car (or helicopter) blows up: you're thrown out on foot next to the wreck; the city sends police, ambulance,
+// fire engine, then the tow truck, and the street cleaners the next day
+function crash(s, heli) {
+  const x = me.x, y = me.y, a = me.a;
+  const model = heli ? 64 : (me.car?.model ?? 0);
+  live.boom(x, y, me.z);
+  shake(20);
+  me.mode = "walk"; me.v = 0; me.car = null; me.alt = 0; me.vx = me.vy = 0;
+  $("altBtns").hidden = true;
+  for (const side of [1, -1, 2, -2]) {                     // out on the side that isn't a wall
+    const ox = x - Math.sin(a) * 3 * side, oy = y + Math.cos(a) * 3 * side;
+    if (walkable("walk", ox, oy)) { me.x = ox; me.y = oy; break; }
+  }
+  me.dazed = performance.now() + 2500;
+  toast(heli ? "Crash ! L'hélico s'est écrasé. Les secours arrivent." : "Boum ! La voiture a explosé. Les secours arrivent.");
+  hud();
+  impact({ kind: "crash", x, y, a, model, id: s?.id });
+}
+const knocked = new Set();
+function knock(s) {
+  if (knocked.has(s.id)) return;
+  knocked.add(s.id);
+  shake(5);
+  impact({ kind: "hit", id: s.id, x: me.x, y: me.y });
+}
+function nearestCar(r = 5.5) {
+  let best = null, bd = r;
+  for (const [id, k, x, y, , , , c] of live.people) {
+    if (k !== 0) continue;
+    const d = Math.hypot(x - me.x, y - me.y);
+    if (d < bd) { bd = d; best = { id, x, y, c }; }
+  }
+  return best;
+}
+async function carjack(car) {
+  const j = await impact({ kind: "jack", id: car.id, x: me.x, y: me.y });
+  if (!j || j.model == null) return toast("Raté, la voiture est partie");
+  if (room) leave();
+  me.x = j.x; me.y = j.y; me.a = j.a; me.mode = "car"; me.v = 0;
+  me.car = carSpec(j.model);
+  toast(`Tu prends le volant (${me.car.label}) ! Le conducteur s'enfuit.`);
+  hud();
 }
 
 // Helicopter: free flight with inertia (screen-relative like walking), Space / C to climb / descend
@@ -863,6 +1058,18 @@ function flyHeli(ux, uy, dt) {
   if (!air) { me.vx = me.vy = 0; }
   me.x += me.vx * dt; me.y += me.vy * dt;
   me.v = Math.hypot(me.vx, me.vy);
+  // a building under us taller than our altitude: fast, we crash into it; slowly, we stop on its roof
+  if (me.alt > 1.5) {
+    const n = navAt(me.x, me.y);
+    if (n && n.f & F_BUILDING) {
+      const [sx, sy] = live.project(me.x, me.y, groundZ(me.x, me.y) + me.alt), h = live.heightAt(sx, sy);
+      if (h && h >= me.alt - 1.5) {
+        if (me.v > 6 || vz < -8) return crash(null, true);
+        me.alt = Math.max(me.alt, h + 0.5);
+        me.vx *= -0.3; me.vy *= -0.3;
+      }
+    }
+  }
   if (me.v > 1) { let da = Math.atan2(me.vy, me.vx) - me.a; da = Math.atan2(Math.sin(da), Math.cos(da)); me.a += da * Math.min(1, dt * 3); }
 }
 // Attitude of a helicopter from how it moves (works the same for us and for other players): it pitches nose
@@ -942,8 +1149,10 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   if (mode === "heli") items.push(...heliModel(o, x, y, z, a, col, isMe));
   const hsh = [...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
   const step = Math.floor(performance.now() / 1000 * 2.2) % 2;
-  const spr = mode === "car" ? live.SPRITE_CARS[hsh % 8] : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;
-  const lamps = mode === "car" ? live.vlamps(x, y, z, a, 4.2, 1.7, 0.65) : mode === "bike" ? live.vlamps(x, y, z, a, 1.7, 0, 0.9, { noBeam: true }) : null;
+  const carM = /^car(\d+)$/.exec(mode || ""), spec = isMe ? me.car : carM ? carSpec(+carM[1]) : null;
+  if (carM) mode = "car";
+  const spr = mode === "car" ? (spec?.name || live.SPRITE_CARS[hsh % 8]) : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;
+  const lamps = mode === "car" ? live.vlamps(x, y, z, a, spec?.L ?? 4.2, (spec?.W ?? 1.8) - 0.1, 0.65) : mode === "bike" ? live.vlamps(x, y, z, a, 1.7, 0, 0.9, { noBeam: true }) : null;
   if (mode !== "heli") items.push({ sx, sy, h: 2 * K, lamps, draw: () => {
     if (live.sprite(spr, x, y, z, a, "p:" + name)) return;
     if (mode === "car") live.box(x, y, z + 0.2, a, 4.3, 1.8, 1.45, live.shade(col, 1.1), col, "rgba(20,24,28,.6)");
@@ -1004,7 +1213,7 @@ function hud() {
        i >= 0 ? `Prochain arrêt : <b>${esc(v.names[i])}</b> (${Math.max(0, Math.round((v.arr[i] - t) / 60))} min)` : "");
   } else {
     const kmh = Math.round(Math.abs(me.v) * 3.6);
-    txt = `<b>${esc(session?.name)}</b> · ${{ walk: "à pied", bike: me.rental ? "en Naolib Vélo" : "à vélo", car: "en voiture", heli: "en hélico" }[me.mode]} · ${kmh} km/h${me.mode === "heli" ? ` · ${Math.round(me.alt)} m` : ""}`;
+    txt = `<b>${esc(session?.name)}</b> · ${{ walk: "à pied", bike: me.rental ? "en Naolib Vélo" : "à vélo", car: `en voiture${me.car ? ` (${me.car.label})` : ""}`, heli: "en hélico" }[me.mode]} · ${kmh} km/h${me.mode === "heli" ? ` · ${Math.round(me.alt)} m` : ""}`;
   }
   h.innerHTML = txt;
 }

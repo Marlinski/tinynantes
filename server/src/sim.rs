@@ -155,6 +155,11 @@ impl Graph {
 
     /// A* shortest path for `mode` (time for cars, distance otherwise); gives up after `budget` expansions
     pub fn route(&self, a: u32, b: u32, mode: u8, budget: usize) -> Option<Vec<u32>> {
+        self.route_avoid(a, b, mode, budget, &[])
+    }
+
+    /// The same, never taking the directed segments in `avoid` (a street found jammed).
+    pub fn route_avoid(&self, a: u32, b: u32, mode: u8, budget: usize, avoid: &[(u32, u32)]) -> Option<Vec<u32>> {
         #[derive(PartialEq)]
         struct Q(f32, u32);
         impl Eq for Q {}
@@ -195,7 +200,7 @@ impl Graph {
             }
             let gn = g[&n];
             for e in &self.adj[n as usize] {
-                if e.modes & mode == 0 {
+                if e.modes & mode == 0 || avoid.contains(&(n, e.to)) {
                     continue;
                 }
                 let c = if mode == DRIVE { e.len / e.vmax } else { e.len };
@@ -249,11 +254,37 @@ pub enum Kind {
     Car = 0,
     Walker = 1,
     Bike = 2,
-    /// ambulance, police or fire engine; its variant byte = service (0 ambulance, 1 police, 2 fire) + 4 × siren
+    /// service vehicles; variant byte = service (0 ambulance, 1 police, 2 fire, 3 tow truck, 4 street cleaning)
+    /// + 8 × siren + 16 × loaded (a tow truck carrying a wreck)
     Emergency = 3,
     /// a pedestrian in a demonstration; variant = role (0 marcher, 1 batucada drummer, 2 placard) + 4 × colour
     Marcher = 4,
+    /// what a crash leaves: a burnt-out car or someone knocked down; variant = model (0..15, the car's variant
+    /// byte) + 16 × person + 32 × burning (the first minutes)
+    Wreck = 5,
+    /// a scorch mark on the ground after an explosion, until the street cleaners come (24 h)
+    Mark = 6,
 }
+
+/// A player as the simulation sees them (positions from the players' sessions, ~5 times a second).
+#[derive(Clone, Copy)]
+pub struct PlayerIn {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    /// 0 on foot, 1 bike, 2 car
+    pub mode: u8,
+    /// driving fast, or just caused a crash: people run away from them
+    pub danger: bool,
+}
+
+const MAX_SERVICE: usize = 20; // service vehicles on the map at once, all kinds; beyond that nobody comes
+const MARK_TTL: f64 = 24.0 * 3600.0; // scorch marks stay a day, then the street cleaners come
+const TOW_AFTER: f64 = 150.0; // the tow truck is called this long after a crash
+/// where the tow trucks (when no police station is near) and the street cleaners start from: a fictional
+/// municipal depot on the Île de Nantes (local metres)
+const DEPOT: [f32; 2] = [-1450.0, -1250.0];
 
 /// Where emergency vehicles start from and return to (web/data/world/bases.json).
 #[derive(Deserialize, Clone)]
@@ -315,6 +346,17 @@ struct Agent {
     /// spawned from the debug panel (removed together), and a small offset from the path (crowds spread out)
     dbg: bool,
     jit: [f32; 2],
+    /// service vehicles on a job: (the wreck or mark they are for, phase: 0 on the way, 1 on the scene, 2 back)
+    /// and where they return; wrecks and marks: (the vehicle assigned to them, 0)
+    job: Option<(u32, u8)>,
+    home: u32,
+    /// wrecks and marks: when it happened; people: running away until then
+    since: f64,
+    scared_until: f64,
+    /// a tow truck carrying a wreck back
+    loaded: bool,
+    /// cars: seconds spent at a standstill (a jam: after a while they turn round and find another way)
+    stuck: f32,
 }
 
 /// What clients get for one inhabitant: [id, kind, x, y, z, heading, speed, colour/variant]
@@ -344,6 +386,9 @@ pub struct Sim {
     transit: Option<Arc<TransitIndex>>,
     march: Option<March>,
     hour: u32,
+    players: Vec<PlayerIn>,
+    /// scorch marks are saved here (they outlive a restart: 24 h)
+    marks_file: Option<std::path::PathBuf>,
 }
 
 /// A demonstration going through the centre: its route, why, and since when.
@@ -457,6 +502,8 @@ impl Sim {
             quartiers: Quartiers::default(),
             transit: None,
             march: None,
+            players: vec![],
+            marks_file: None,
             hour: 12,
         }
     }
@@ -471,8 +518,8 @@ impl Sim {
         self.transit = Some(t);
     }
     /// For /metrics: inhabitants on the map by kind (car, walker, bike, emergency, marcher).
-    pub fn census(&self) -> [usize; 5] {
-        let mut n = [0; 5];
+    pub fn census(&self) -> [usize; 7] {
+        let mut n = [0; 7];
         for a in &self.agents {
             n[a.kind as usize] += 1;
         }
@@ -653,6 +700,12 @@ impl Sim {
             face: 0.0,
             dbg: false,
             jit: [0.0; 2],
+            job: None,
+            home: 0,
+            since: 0.0,
+            scared_until: 0.0,
+            loaded: false,
+            stuck: 0.0,
         });
         self.agents.last_mut().unwrap()
     }
@@ -961,7 +1014,19 @@ impl Sim {
         }
         let mut done = vec![];
         let mut arrivals = vec![];
+        let mut jobs = vec![];
+        let mut reroute = vec![];
+        // what sim cars must not drive into: players (stop), wrecks (crawl past)
+        let blockers: Vec<([f32; 2], bool)> = self.players.iter().map(|p| ([p.x, p.y], true))
+            .chain(self.agents.iter().filter(|a| a.kind == Kind::Wreck && a.service & 16 == 0).map(|a| {
+                let q = self.g.xyz[a.path[0] as usize];
+                ([q[0] + a.jit[0], q[1] + a.jit[1]], false)
+            }))
+            .collect();
         for (k, a) in self.agents.iter_mut().enumerate() {
+            if matches!(a.kind, Kind::Wreck | Kind::Mark) {
+                continue;
+            }
             if let Plan::Inside { until } | Plan::Waiting { until } | Plan::Riding { until } = a.plan {
                 if now >= until && now >= a.hold_until {
                     arrivals.push(k); // time to leave the place / board / get off
@@ -987,8 +1052,37 @@ impl Sim {
             }
             if a.kind == Kind::Car {
                 let limit = if a.section.is_some() && a.i < a.sec_until { a.sec_speed } else { g.edge_vmax(na, nb).min(a.vpref.max(8.0)) };
-                let gap = gaps[k];
+                let mut gap = gaps[k];
+                let crawl = f32::INFINITY;
+                if !blockers.is_empty() {
+                    // a player or a wreck in its way, in its lane, ahead
+                    let (pa, pb) = (g.xyz[na as usize], g.xyz[nb as usize]);
+                    let len = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt().max(0.01);
+                    let (dx, dy) = ((pb[0] - pa[0]) / len, (pb[1] - pa[1]) / len);
+                    let (cx, cy) = (pa[0] + dx * a.s + dy * 1.7, pa[1] + dy * a.s - dx * 1.7);
+                    for (q, hard) in &blockers {
+                        let (rx, ry) = (q[0] - cx, q[1] - cy);
+                        let ahead = rx * dx + ry * dy;
+                        let side = (rx * dy - ry * dx).abs();
+                        if ahead > 0.0 && ahead < 25.0 && side < 2.6 {
+                            // players and wrecks block the lane: a jam, unless they find another way
+                            let _ = hard;
+                            gap = gap.min(ahead);
+                        }
+                    }
+                }
                 let target = if gap < 7.0 { 0.0 } else if gap < 30.0 { limit.min((gap - 7.0) * 0.6) } else { limit };
+                let target = target.min(crawl);
+                if a.v < 0.5 && target < 0.5 {
+                    a.stuck += dt;
+                } else {
+                    a.stuck = 0.0;
+                }
+                // waited long enough (each driver has their patience): turn round and find another way
+                if a.stuck > 15.0 + (a.seed % 25) as f32 && a.i + 1 < a.path.len() {
+                    a.stuck = -30.0; // don't try again at once
+                    reroute.push(k);
+                }
                 let acc = if target > a.v { 2.2 } else { 5.0 };
                 a.v += (target - a.v).clamp(-acc * dt, acc * dt);
                 if a.i >= a.sec_until {
@@ -1014,7 +1108,9 @@ impl Sim {
             let hour_rng: f64 = self.rng.gen_range(300.0..2400.0);
             let a = &mut self.agents[k];
             match (a.kind, a.plan) {
+                (Kind::Emergency, _) if a.job.is_some() => jobs.push(k),
                 (Kind::Car, _) | (Kind::Emergency, _) | (Kind::Marcher, _) => done.push(k),
+                (Kind::Wreck, _) | (Kind::Mark, _) => {}
                 (_, Plan::Going) if a.ride.is_some() && a.poi.is_some() => {
                     // at the stop: wait for the tram/bus/Navibus
                     let dep = a.ride.as_ref().map(|r| r.dep).unwrap_or(0) as f64;
@@ -1071,11 +1167,425 @@ impl Sim {
                 _ => done.push(k),
             }
         }
+        for k in jobs {
+            self.job_step(k, now, &mut done);
+        }
+        for k in reroute {
+            self.turn_round(k);
+        }
+        self.avoid(dt, now);
         done.sort_unstable();
         done.dedup();
+        let marks_before = self.agents.iter().filter(|a| a.kind == Kind::Mark).count();
         for k in done.into_iter().rev() {
             self.agents.swap_remove(k);
         }
+        if self.agents.iter().filter(|a| a.kind == Kind::Mark).count() != marks_before {
+            self.save_marks();
+        }
+    }
+
+    // ------------------------------------------------------------ crashes, services, crowds keeping apart
+
+    pub fn set_players(&mut self, p: Vec<PlayerIn>) {
+        self.players = p;
+    }
+
+    /// A car in a jam: back along its street and on by another way to where it was going (or vanish if none).
+    fn turn_round(&mut self, k: usize) {
+        let (i, s, dest) = { let a = &self.agents[k]; (a.i, a.s, *a.path.last().unwrap()) };
+        let (na, nb) = (self.agents[k].path[i], self.agents[k].path[i + 1]);
+        let Some(alt) = self.g.route_avoid(na, dest, DRIVE, 6000, &[(na, nb)]) else { return };
+        let (pa, pb) = (self.g.xyz[na as usize], self.g.xyz[nb as usize]);
+        let len = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
+        let a = &mut self.agents[k];
+        let mut path = vec![nb];
+        path.extend(alt);
+        a.path = path;
+        a.i = 0;
+        a.s = (len - s).max(0.0);
+        a.section = None;
+        a.sec_until = 0;
+        a.v = 1.0;
+        crate::metrics::inc("tn_sim_reroutes_total", &[], 1.0);
+    }
+
+    fn service_count(&self) -> usize {
+        self.agents.iter().filter(|a| a.kind == Kind::Emergency).count()
+    }
+
+    /// Send a service vehicle (0 ambulance, 1 police, 2 fire, 3 tow, 4 street cleaning) to the wreck or mark `target`
+    /// at (x, y), from the nearest base of its kind (tow trucks: police stations or the depot; cleaners: the depot).
+    /// None when MAX_SERVICE vehicles are already out (then nobody comes, for now).
+    fn dispatch(&mut self, service: u8, target: u32, x: f32, y: f32) -> Option<u32> {
+        if self.service_count() >= MAX_SERVICE {
+            return None;
+        }
+        let to = self.g.nearest(x, y, DRIVE, 250.0)?;
+        let from_kind = match service { 3 => 1, 4 => 99, s => s };
+        let mut homes: Vec<u32> = self.bases.iter().filter(|b| b.service == from_kind).map(|b| b.node).collect();
+        if service >= 3 {
+            homes.extend(self.g.nearest(DEPOT[0], DEPOT[1], DRIVE, 300.0));
+        }
+        let d = |n: &u32| { let p = self.g.xyz[*n as usize]; (p[0] - x).powi(2) + (p[1] - y).powi(2) };
+        homes.sort_by(|a, b| d(a).partial_cmp(&d(b)).unwrap_or(Ordering::Equal));
+        let (home, path) = homes.iter().take(3).find_map(|&h| self.g.route(h, to, DRIVE, 20000).map(|p| (h, p)))?;
+        if path.len() < 2 {
+            return None;
+        }
+        let siren = service <= 2;
+        let v = if siren { 15.0 } else { 10.0 };
+        let ag = self.spawn(Kind::Emergency, path, v);
+        ag.v = v * 0.5;
+        ag.service = service;
+        ag.siren = siren;
+        ag.job = Some((target, 0));
+        ag.home = home;
+        let id = ag.id;
+        crate::metrics::inc("tn_service_dispatches_total", &[("service", ["ambulance", "police", "fire", "tow", "cleaning"][service as usize])], 1.0);
+        Some(id)
+    }
+
+    /// A service vehicle reached the end of its path: on the scene (stay a while), then do its job and go back.
+    fn job_step(&mut self, k: usize, now: f64, done: &mut Vec<usize>) {
+        let (target, phase) = self.agents[k].job.unwrap();
+        let service = self.agents[k].service;
+        match phase {
+            0 => {
+                let stay = match service { 0 => 150.0, 1 => 240.0, 2 => 200.0, 3 => 40.0, _ => 90.0 };
+                let a = &mut self.agents[k];
+                a.hold_until = now + stay;
+                a.face = a.path.windows(2).last().map(|w| {
+                    let (p, q) = (self.g.xyz[w[0] as usize], self.g.xyz[w[1] as usize]);
+                    (q[1] - p[1]).atan2(q[0] - p[0])
+                }).unwrap_or(0.0);
+                a.job = Some((target, 1));
+                // stay drawn at the end of the last street (an agent past its path's end isn't in the snapshot)
+                let n = a.path.len();
+                if n >= 2 {
+                    let (p, q) = (self.g.xyz[a.path[n - 2] as usize], self.g.xyz[a.path[n - 1] as usize]);
+                    a.i = n - 2;
+                    a.s = ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
+                }
+            }
+            1 => {
+                // the job: the tow truck lifts the wreck, the ambulance takes the injured, the cleaners clean
+                if let Some(t) = self.agents.iter().position(|w| w.id == target) {
+                    let w = &self.agents[t];
+                    let take = match (service, w.kind) {
+                        (3, Kind::Wreck) => w.service & 16 == 0,
+                        (0, Kind::Wreck) => w.service & 16 != 0,
+                        (4, Kind::Mark) => true,
+                        _ => false,
+                    };
+                    if take {
+                        done.push(t);
+                        if service == 3 {
+                            self.agents[k].loaded = true;
+                        }
+                    }
+                }
+                let here = *self.agents[k].path.last().unwrap();
+                let home = self.agents[k].home;
+                match self.g.route(here, home, DRIVE, 20000) {
+                    Some(p) if p.len() >= 2 => {
+                        let a = &mut self.agents[k];
+                        a.path = p;
+                        a.i = 0;
+                        a.s = 0.0;
+                        a.siren = false;
+                        a.v = 4.0;
+                        a.vpref = 10.0;
+                        a.job = Some((target, 2));
+                    }
+                    _ => done.push(k),
+                }
+            }
+            _ => done.push(k),
+        }
+    }
+
+    /// Once a second: call the tow truck for wrecks after a while, the ambulance for the injured if nobody came
+    /// (the cap was reached), the street cleaners for day-old scorch marks; forget wrecks nobody could fetch.
+    fn upkeep(&mut self, now: f64) {
+        let mut calls = vec![];
+        for a in &self.agents {
+            let assigned = a.job.is_some_and(|(v, _)| self.agents.iter().any(|b| b.id == v));
+            if assigned {
+                continue;
+            }
+            let p = self.position(a);
+            let (x, y) = (p[0] + a.jit[0], p[1] + a.jit[1]);
+            match a.kind {
+                Kind::Wreck if a.service & 16 == 0 && now - a.since > TOW_AFTER => calls.push((3, a.id, x, y)),
+                Kind::Wreck if a.service & 16 != 0 && now - a.since > 20.0 => calls.push((0, a.id, x, y)),
+                Kind::Mark if now - a.since > MARK_TTL => calls.push((4, a.id, x, y)),
+                _ => {}
+            }
+        }
+        for (service, id, x, y) in calls.into_iter().take(2) {
+            if let Some(v) = self.dispatch(service, id, x, y) {
+                if let Some(w) = self.agents.iter_mut().find(|a| a.id == id) {
+                    w.job = Some((v, 0));
+                }
+            }
+        }
+        // a wreck nobody could fetch in two hours (always at the cap): cleared anyway
+        let before = self.agents.len();
+        self.agents.retain(|a| !(a.kind == Kind::Wreck && now - a.since > 7200.0));
+        let _ = before;
+    }
+
+    /// Something static (wreck, mark) exactly at (x, y): on the nearest node, offset to the point.
+    fn place_static(&mut self, kind: Kind, x: f32, y: f32, face: f32, variant: u8, now: f64) -> Option<u32> {
+        let n = self.g.nearest(x, y, DRIVE | WALK | BIKE, 80.0)?;
+        let q = self.g.xyz[n as usize];
+        let ag = self.spawn(kind, vec![n, n], 0.0);
+        ag.v = 0.0;
+        ag.jit = [x - q[0], y - q[1]];
+        ag.face = face;
+        ag.hold_until = f64::MAX;
+        ag.service = variant;
+        ag.since = now;
+        Some(ag.id)
+    }
+
+    /// Where an inhabitant is drawn (path position plus its offset), and which way it faces.
+    pub fn where_is(&self, id: u32) -> Option<([f32; 3], f32, Kind, u8)> {
+        let a = self.agents.iter().find(|a| a.id == id)?;
+        let p = self.position(a);
+        let i = a.i.min(a.path.len().saturating_sub(2));
+        let h = if a.path.len() >= 2 && a.path[i] != a.path[i + 1] {
+            let (pa, pb) = (self.g.xyz[a.path[i] as usize], self.g.xyz[a.path[i + 1] as usize]);
+            (pb[1] - pa[1]).atan2(pb[0] - pa[0])
+        } else { a.face };
+        let v = match a.kind { Kind::Car => (a.seed >> 8) as u8, _ => a.service };
+        Some(([p[0] + a.jit[0], p[1] + a.jit[1], p[2]], h, a.kind, v))
+    }
+
+    /// A player's car blew up at (x, y): a burnt wreck (and the car it hit, if any), a scorch mark, and the
+    /// emergency services. Returns the ids of the wrecks.
+    pub fn crash(&mut self, x: f32, y: f32, heading: f32, model: u8, hit: Option<u32>, now: f64) -> Vec<u32> {
+        let mut out = vec![];
+        if let Some(id) = hit {
+            if let Some((p, h, kind, v)) = self.where_is(id) {
+                if matches!(kind, Kind::Car | Kind::Emergency) {
+                    self.agents.retain(|a| a.id != id);
+                    let m = if kind == Kind::Car { v % 16 } else { 9 }; // a service vehicle: drawn as the van
+                    out.extend(self.place_static(Kind::Wreck, p[0], p[1], h, m, now));
+                }
+            }
+        }
+        out.extend(self.place_static(Kind::Wreck, x, y, heading, model & 0x4f, now)); // 64: a helicopter
+        self.place_static(Kind::Mark, x, y, 0.0, 0, now);
+        self.save_marks();
+        for s in [1, 0, 2] {
+            if let Some(&w) = out.first() {
+                if let Some(v) = self.dispatch(s, w, x, y) {
+                    if s == 0 {
+                        // the ambulance also checks the driver: nothing to carry away from a burnt car
+                        let _ = v;
+                    }
+                }
+            }
+        }
+        self.scare(x, y, 60.0, now + 25.0);
+        crate::metrics::inc("tn_crashes_total", &[("with", if hit.is_some() { "vehicle" } else { "wall" })], 1.0);
+        out
+    }
+
+    /// A player's car hit someone on foot or on a bike: they lie there until the ambulance comes.
+    pub fn knock_down(&mut self, id: u32, now: f64) -> Option<[f32; 2]> {
+        let (p, h, kind, _) = self.where_is(id)?;
+        if !matches!(kind, Kind::Walker | Kind::Bike | Kind::Marcher) {
+            return None;
+        }
+        let seed = self.agents.iter().find(|a| a.id == id).map(|a| a.seed).unwrap_or(0);
+        self.agents.retain(|a| a.id != id);
+        let w = self.place_static(Kind::Wreck, p[0], p[1], h, 16 + (seed % 8) as u8, now)?;
+        if let Some(a) = self.agents.iter_mut().find(|a| a.id == w) {
+            a.seed = seed;
+        }
+        for s in [0, 1] {
+            if let Some(v) = self.dispatch(s, w, p[0], p[1]) {
+                if s == 0 {
+                    if let Some(a) = self.agents.iter_mut().find(|a| a.id == w) {
+                        a.job = Some((v, 0));
+                    }
+                }
+            }
+        }
+        self.scare(p[0], p[1], 45.0, now + 25.0);
+        crate::metrics::inc("tn_knockdowns_total", &[], 1.0);
+        Some([p[0], p[1]])
+    }
+
+    /// A player takes a sim car: the driver gets out and runs; returns the car's variant byte, position and heading.
+    pub fn carjack(&mut self, id: u32, now: f64) -> Option<(u8, [f32; 3], f32)> {
+        let (p, h, kind, v) = self.where_is(id)?;
+        if kind != Kind::Car {
+            return None;
+        }
+        self.agents.retain(|a| a.id != id);
+        // the driver, out of the car and off as fast as they can
+        if let Some(from) = self.g.nearest(p[0], p[1], WALK, 40.0) {
+            if let Some(to) = self.random_node_near(p[0] - h.cos() * 200.0, p[1] - h.sin() * 200.0, 120.0, WALK) {
+                if let Some(path) = self.g.route(from, to, WALK, 4000) {
+                    let seed: u32 = self.rng.gen();
+                    let persona = people::persona(&self.quartiers, people::PersonaInput {
+                        seed, hour: self.hour, home: None, place: None, trip: people::Trip::Walk, march: None });
+                    let ag = self.spawn(Kind::Walker, path, 1.4);
+                    ag.seed = seed;
+                    ag.persona = Some(Box::new(persona));
+                    ag.scared_until = now + 60.0;
+                }
+            }
+        }
+        self.scare(p[0], p[1], 25.0, now + 15.0);
+        crate::metrics::inc("tn_carjacks_total", &[], 1.0);
+        Some((v, p, h))
+    }
+
+    /// Everyone on foot or on a bike within `r` of (x, y) runs away until `until`.
+    fn scare(&mut self, x: f32, y: f32, r: f32, until: f64) {
+        for k in 0..self.agents.len() {
+            if !matches!(self.agents[k].kind, Kind::Walker | Kind::Bike | Kind::Marcher) {
+                continue;
+            }
+            let p = self.position(&self.agents[k]);
+            if (p[0] - x).powi(2) + (p[1] - y).powi(2) < r * r {
+                self.agents[k].scared_until = self.agents[k].scared_until.max(until);
+                self.flee_from(k, x, y);
+            }
+        }
+    }
+
+    /// Turn back if the danger is ahead (walk back the way they came; they then leave the map).
+    fn flee_from(&mut self, k: usize, x: f32, y: f32) {
+        let a = &self.agents[k];
+        if a.i + 1 >= a.path.len() || !matches!(a.plan, Plan::Going | Plan::Leaving) || a.hold_until > 0.0 && a.dbg {
+            return;
+        }
+        let (pa, pb) = (self.g.xyz[a.path[a.i] as usize], self.g.xyz[a.path[a.i + 1] as usize]);
+        let toward = (pb[0] - pa[0]) * (x - pa[0]) + (pb[1] - pa[1]) * (y - pa[1]) > 0.0;
+        if !toward {
+            return;
+        }
+        let len = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
+        let a = &mut self.agents[k];
+        let mut back: Vec<u32> = a.path[..=a.i + 1].to_vec();
+        back.reverse();
+        a.s = (len - a.s).max(0.0);
+        a.path = back;
+        a.i = 0;
+        a.poi = None;
+        a.plan = Plan::Leaving;
+        a.ride = None;
+    }
+
+    /// People and bikes keep apart like a flock (separation), step aside for players, and run from danger:
+    /// their offset from the path (`jit`) is pushed away from whoever is too close, and eases back otherwise.
+    fn avoid(&mut self, dt: f32, now: f64) {
+        const CELL: f32 = 4.0;
+        let movers: Vec<usize> = (0..self.agents.len())
+            .filter(|&k| matches!(self.agents[k].kind, Kind::Walker | Kind::Bike | Kind::Marcher)
+                && !matches!(self.agents[k].plan, Plan::Inside { .. } | Plan::Riding { .. }))
+            .collect();
+        let pos: Vec<[f32; 2]> = movers.iter().map(|&k| {
+            let a = &self.agents[k];
+            let p = self.position(a);
+            [p[0] + a.jit[0], p[1] + a.jit[1]]
+        }).collect();
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (m, p) in pos.iter().enumerate() {
+            grid.entry(((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32)).or_default().push(m);
+        }
+        let players = self.players.clone();
+        for (m, &k) in movers.iter().enumerate() {
+            let p = pos[m];
+            let kind = self.agents[k].kind;
+            let r = match kind { Kind::Bike => 1.8, Kind::Marcher => 0.9, _ => 1.1 };
+            let (mut fx, mut fy) = (0.0f32, 0.0f32);
+            let (cx, cy) = ((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32);
+            for gx in cx - 1..=cx + 1 {
+                for gy in cy - 1..=cy + 1 {
+                    for &o in grid.get(&(gx, gy)).into_iter().flatten() {
+                        if o == m {
+                            continue;
+                        }
+                        let (dx, dy) = (p[0] - pos[o][0], p[1] - pos[o][1]);
+                        let d = (dx * dx + dy * dy).sqrt();
+                        if d < r && d > 0.001 {
+                            fx += dx / d * (r - d);
+                            fy += dy / d * (r - d);
+                        } else if d <= 0.001 {
+                            fx += ((k % 7) as f32 - 3.0) * 0.1;
+                            fy += ((k % 5) as f32 - 2.0) * 0.1;
+                        }
+                    }
+                }
+            }
+            let mut scared = false;
+            for pl in &players {
+                let (dx, dy) = (p[0] - pl.x, p[1] - pl.y);
+                let d = (dx * dx + dy * dy).sqrt().max(0.05);
+                let reach = match pl.mode { 2 => 5.0, 1 => 3.0, _ => 1.6 };
+                if d < reach {
+                    fx += dx / d * (reach - d) * 2.0;
+                    fy += dy / d * (reach - d) * 2.0;
+                }
+                if pl.danger && d < 35.0 {
+                    scared = true;
+                    fx += dx / d * 1.5;
+                    fy += dy / d * 1.5;
+                }
+            }
+            let a = &mut self.agents[k];
+            if scared {
+                a.scared_until = a.scared_until.max(now + 8.0);
+            }
+            let max: f32 = match kind { Kind::Marcher => 6.0, Kind::Bike => 2.5, _ => 3.5 };
+            let busy = fx.abs() + fy.abs() > 0.01;
+            a.jit[0] += fx * dt * 2.5;
+            a.jit[1] += fy * dt * 2.5;
+            if !busy && !a.dbg {
+                a.jit[0] *= 1.0 - 0.15 * dt;
+                a.jit[1] *= 1.0 - 0.15 * dt;
+            }
+            let n = (a.jit[0].powi(2) + a.jit[1].powi(2)).sqrt();
+            let max = if a.dbg { max.max(12.0) } else { max };
+            if n > max {
+                a.jit[0] *= max / n;
+                a.jit[1] *= max / n;
+            }
+            // running away: faster while scared, back to their pace after
+            if now < a.scared_until && a.hold_until < now {
+                a.v = a.vpref * if kind == Kind::Bike { 1.6 } else { 2.6 };
+            } else if a.v > a.vpref * 1.05 && a.hold_until < now {
+                a.v = a.vpref;
+            }
+        }
+        let _ = now;
+    }
+
+    pub fn load_marks(&mut self, path: std::path::PathBuf) {
+        if let Ok(b) = std::fs::read(&path) {
+            let v: Vec<[f64; 3]> = serde_json::from_slice(&b).unwrap_or_default();
+            for [x, y, at] in v {
+                self.place_static(Kind::Mark, x as f32, y as f32, 0.0, 0, at);
+            }
+            tracing::info!("{} scorch marks loaded", self.agents.iter().filter(|a| a.kind == Kind::Mark).count());
+        }
+        self.marks_file = Some(path);
+    }
+
+    fn save_marks(&self) {
+        let Some(f) = &self.marks_file else { return };
+        let v: Vec<[f64; 3]> = self.agents.iter().filter(|a| a.kind == Kind::Mark).map(|a| {
+            let p = self.g.xyz[a.path[0] as usize];
+            [(p[0] + a.jit[0]) as f64, (p[1] + a.jit[1]) as f64, a.since]
+        }).collect();
+        let _ = std::fs::write(f, serde_json::to_vec(&v).unwrap_or_default());
     }
 
     pub fn populate(&mut self) {
@@ -1086,6 +1596,7 @@ impl Sim {
         self.hour = t.hour();
         self.spawn_people(t.hour(), wd >= 5, wd == 6);
         self.spawn_marchers(t.timestamp() as f64);
+        self.upkeep(t.timestamp_millis() as f64 / 1000.0);
     }
 
     pub fn snapshot(&self, now: f64) -> Snapshot {
@@ -1106,13 +1617,16 @@ impl Sim {
                     Kind::Car | Kind::Emergency => 1.7,
                     Kind::Walker => 4.5 + (a.seed % 3) as f32 * 0.6,
                     Kind::Marcher => (a.seed % 13) as f32 - 6.0, // the whole street
+                    Kind::Wreck | Kind::Mark => 0.0,
                     Kind::Bike => 2.6,
                 };
                 let x = pa[0] + (pb[0] - pa[0]) * f + dy * side + a.jit[0];
                 let y = pa[1] + (pb[1] - pa[1]) * f - dx * side + a.jit[1];
                 let z = pa[2] + (pb[2] - pa[2]) * f;
                 let variant = match a.kind {
-                    Kind::Emergency => a.service + 4 * a.siren as u8,
+                    Kind::Emergency => a.service + 8 * a.siren as u8 + 16 * a.loaded as u8,
+                    Kind::Wreck => a.service + if now - a.since < 240.0 { 32 } else { 0 },
+                    Kind::Mark => 0,
                     Kind::Marcher => a.service + 4 * ((a.seed >> 8) as u8 % 60),
                     _ => (a.seed >> 8) as u8,
                 };
@@ -1205,8 +1719,10 @@ impl Sim {
             _ => what,
         };
         let kind = match a.kind {
-            Kind::Emergency => ["ambulance", "police", "pompiers"][a.service as usize % 3],
+            Kind::Emergency => ["ambulance", "police", "pompiers", "fourriere", "proprete"][a.service as usize % 5],
             Kind::Marcher => "walker",
+            Kind::Wreck => if a.service & 16 != 0 { "down" } else { "wreck" },
+            Kind::Mark => "mark",
             k => ["car", "walker", "bike"][k as usize],
         };
         let p = a.persona.as_deref();
@@ -1230,12 +1746,22 @@ pub struct World {
     pub sim: RwLock<Sim>,
     pub snap: watch::Receiver<Arc<Snapshot>>,
     tx: watch::Sender<Arc<Snapshot>>,
+    /// the last ~2.5 s of snapshots: what each player's screen was showing when they report a collision
+    /// (clients draw the inhabitants ~0.6 s in the past, plus their own latency): lag compensation
+    pub history: std::sync::Mutex<std::collections::VecDeque<Arc<Snapshot>>>,
 }
 
 impl World {
     pub fn new(sim: Sim) -> Arc<World> {
         let (tx, snap) = watch::channel(Arc::new(Snapshot { at: 0.0, items: vec![] }));
-        Arc::new(World { sim: RwLock::new(sim), snap, tx })
+        Arc::new(World { sim: RwLock::new(sim), snap, tx, history: Default::default() })
+    }
+
+    /// The closest inhabitant `id` came to (x, y) in the recent past (lag compensated), metres.
+    pub fn came_near(&self, id: u32, x: f32, y: f32) -> Option<f32> {
+        let h = self.history.lock().unwrap();
+        h.iter().flat_map(|s| s.items.iter().filter(|it| it.0 == id).map(|it| ((it.2 - x).powi(2) + (it.3 - y).powi(2)).sqrt()))
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
     }
 }
 
@@ -1255,6 +1781,13 @@ pub async fn run(w: Arc<World>) {
         if n % 3 == 0 {
             let snap = Arc::new(s.snapshot(now));
             drop(s);
+            {
+                let mut h = w.history.lock().unwrap();
+                h.push_back(snap.clone());
+                while h.len() > 10 {
+                    h.pop_front();
+                }
+            }
             let _ = w.tx.send(snap);
         }
         n += 1;

@@ -20,7 +20,7 @@ const hgt = new Map();
 let hits = [];                                // clickable things drawn this frame: {x, y, r, open}
 
 export const live = {
-  world, project, toCanvas, zAt, along, vehiclePose, occluded, heightAt, vlamps, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
+  world, project, toCanvas, zAt, get TRAFFIC() { return TRAFFIC; }, along, vehiclePose, occluded, heightAt, vlamps, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
   get ctx() { return ctx; }, room: null,
   get vehicles() { return vehicles; }, get people() { return inhabitants(); }, get bikeStations() { return bikeStations; }, rented: {}, returned: {}, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
@@ -292,7 +292,7 @@ function connectWorld() {
   const u = new URL("api/world", location.href);
   u.protocol = location.protocol === "https:" ? "wss:" : "ws:";
   worldWs = new WebSocket(u);
-  worldWs.onopen = () => { viewSent = ""; sendView(); };
+  worldWs.onopen = () => { viewSent = ""; sendView(); live.worldSince = performance.now(); };
   worldWs.onmessage = (e) => {
     const d = JSON.parse(e.data), off = d.at - Date.now() / 1000;
     clockOff = clockOff == null ? off : Math.min(off, clockOff + 0.02);       // smallest delay seen, slowly forgiving
@@ -702,9 +702,32 @@ function inhabitantItems(t, rect) {
       out.push({ sx, sy, h: 1.5, lamps: vlamps(x, y, z, a, L, W - 0.1, 0.65), hit, draw: () => {
         shadow(x, y, z, a, L + 0.1, W);
         if (!sprite(name, x, y, z, a, id)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
+    } else if (k === 3 && (c & 7) >= 3) {
+      // the tow truck (fourrière; a wreck on its bed on the way back) and the street cleaners
+      const service = c & 7, loaded = (c & 16) !== 0;
+      out.push({ sx, sy, h: 3, lamps: vlamps(x, y, z, a, 6.5, 2.2, 0.8), hit, draw: () => {
+        shadow(x, y, z, a, 6.6, 2.3);
+        if (service === 3) towTruck(x, y, z, a, loaded, now);
+        else sweeper(x, y, z, a, now);
+      }, tip: () => [service === 3 ? (loaded ? "Fourrière : remorque une épave" : "Fourrière") : "Propreté de la Ville : nettoyage", ""] });
+    } else if (k === 5) {
+      // a wreck: a burnt-out car (on fire the first minutes) or someone knocked down
+      const person = (c & 16) !== 0, burning = (c & 32) !== 0, heli = (c & 64) !== 0;
+      boomOnce(id, x, y, z, burning && !person);
+      out.push({ sx, sy, h: person ? 0.3 : 1.5, hit, draw: () => {
+        if (person) { downed(x, y, z, a, CLOTHES[(c & 7) % CLOTHES.length]); return; }
+        shadow(x, y, z, a, 4.4, 1.9);
+        ctx.save(); ctx.filter = "brightness(0.28) saturate(0.15) contrast(1.2)";
+        const ok = heli ? sprite("heli_0", x, y, z, a, id) : sprite(TRAFFIC[(c & 15) % TRAFFIC.length][0], x, y, z, a, id);
+        ctx.restore();
+        if (!ok) box(x, y, z, a, 4.3, 1.8, 1.2, "#2a2a2a", "#1a1a1a", OUTLINE);
+        smoke(x, y, z + 1.2, id, burning);
+      }, tip: () => [person ? "Une personne à terre" : "Épave", person ? "l'ambulance arrive" : "en attente de la fourrière"] });
+    } else if (k === 6) {
+      decals.push([x, y, z, id]);                                   // a scorch mark, drawn on the ground first
     } else if (k === 3) {
-      // emergency: variant = service (0 ambulance, 1 police, 2 fire) + 4 when the siren is on
-      const service = c & 3, siren = (c & 4) !== 0;
+      // emergency: variant = service (0 ambulance, 1 police, 2 fire) + 8 when the siren is on
+      const service = c & 7, siren = (c & 8) !== 0;
       const [name, L, W, bar, barZ] = service === 1 ? ["ems_police", 4.5, 1.8, -0.2, 1.5]
         : service === 2 ? ["ems_fire", 6.4, 2.2, 2.0, 2.95] : id % 4 === 0 ? ["ems_samu", 4.5, 1.8, -0.2, 1.6] : ["ems_ambulance", 5.6, 1.95, 1.6, 2.7];
       out.push({ sx, sy, h: 2.5, lamps: vlamps(x, y, z, a, L, W - 0.1, 0.7, { siren, bar, barZ }), hit, draw: () => {
@@ -853,6 +876,112 @@ function placeItems(t, rect) {
   }
   return out;
 }
+// ---------------------------------------------------------------- crashes: explosions, smoke, wrecks, marks
+let decals = [];                       // scorch marks this frame: [x, y, z, id]
+const booms = [], boomed = new Set();
+// a wreck seen burning for the first time: the explosion (once per wreck, only if it's fresh)
+function boomOnce(id, x, y, z, fresh) {
+  if (boomed.has(id)) return;
+  boomed.add(id);
+  if (fresh && snapsFresh()) booms.push({ x, y, z, t0: performance.now() });
+}
+live.boom = (x, y, z) => booms.push({ x, y, z, t0: performance.now() });
+const snapsFresh = () => performance.now() - (live.worldSince || 0) > 3000;   // not on page load
+function drawBooms() {
+  const now = performance.now();
+  for (let k = booms.length - 1; k >= 0; k--) {
+    const b = booms[k], f = (now - b.t0) / 1400;
+    if (f >= 1) { booms.splice(k, 1); continue; }
+    const [cx, cy] = toCanvas(...project(b.x, b.y, b.z + 1)), s = TN.view.s * TN.dpr;
+    const r = (2 + 9 * Math.sqrt(f)) * s;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, `rgba(255,250,200,${1 - f})`); g.addColorStop(0.35, `rgba(255,170,40,${0.9 * (1 - f)})`);
+    g.addColorStop(0.7, `rgba(200,60,20,${0.6 * (1 - f)})`); g.addColorStop(1, "rgba(60,40,30,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+    ctx.fillStyle = `rgba(40,30,25,${0.8 * (1 - f)})`;                 // debris
+    for (let i = 0; i < 10; i++) {
+      const an = i * 2.4 + b.x, d = (1 + i % 3) * 5 * f * s;
+      ctx.fillRect(cx + Math.cos(an) * d, cy + Math.sin(an) * d * 0.6 - 6 * f * s * (1 - f) * 4, 2 * TN.dpr, 2 * TN.dpr);
+    }
+  }
+}
+function drawDecals() {
+  for (const [x, y, z, id] of decals) {
+    const pts = Array.from({ length: 14 }, (_, k) => {
+      const an = k / 14 * Math.PI * 2, r = 3.2 + 0.9 * Math.sin(k * 2.1 + id);
+      return toCanvas(...project(x + Math.cos(an) * r, y + Math.sin(an) * r, z + 0.05));
+    });
+    const [cx, cy] = toCanvas(...project(x, y, z));
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 3.5 * TN.view.s * TN.dpr * 1.2);
+    g.addColorStop(0, "rgba(10,8,6,.85)"); g.addColorStop(0.6, "rgba(25,20,15,.6)"); g.addColorStop(1, "rgba(40,35,30,0)");
+    ctx.fillStyle = g; ctx.beginPath(); pts.forEach((p, k) => (k ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.fill();
+  }
+}
+function smoke(x, y, z, id, burning) {
+  const t = performance.now() / 1000, s = TN.view.s * TN.dpr;
+  if (burning) {                                                    // flames
+    const [cx, cy] = toCanvas(...project(x, y, z));
+    for (let i = 0; i < 5; i++) {
+      const fl = Math.sin(t * 13 + i * 1.7 + id) * 0.5 + 0.5;
+      ctx.fillStyle = i % 2 ? `rgba(255,120,20,${0.6 + 0.3 * fl})` : `rgba(255,210,60,${0.5 + 0.4 * fl})`;
+      ctx.beginPath(); ctx.ellipse(cx + (i - 2) * 0.5 * s, cy - (0.6 + fl) * s, 0.45 * s, (0.8 + fl * 0.9) * s, 0, 0, 7); ctx.fill();
+    }
+  }
+  for (let i = 0; i < (burning ? 9 : 4); i++) {                     // a column of smoke drifting away
+    const f = ((t * 0.25 + i / 9 + (id % 7) / 7) % 1);
+    const [cx, cy] = toCanvas(...project(x + f * 4, y + f * 2, z + f * (burning ? 18 : 9)));
+    ctx.fillStyle = `rgba(${burning ? 40 : 90},${burning ? 38 : 88},${burning ? 36 : 86},${(burning ? 0.5 : 0.3) * (1 - f)})`;
+    ctx.beginPath(); ctx.arc(cx, cy, (0.8 + f * 3) * s, 0, 7); ctx.fill();
+  }
+}
+function downed(x, y, z, a, col) {                                  // someone lying on the road
+  box(x, y, z, a, 1.7, 0.5, 0.25, col, shade(col, 0.8), OUTLINE);
+  box(x + Math.cos(a) * 0.95, y + Math.sin(a) * 0.95, z, a, 0.3, 0.3, 0.25, "#e0b48a", "#c9986c", OUTLINE);
+}
+function towTruck(x, y, z, a, loaded, now) {
+  const c = Math.cos(a), s = Math.sin(a);
+  box(x + c * 2.2, y + s * 2.2, z + 0.3, a, 2.0, 2.2, 2.2, "#f2a900", "#c98a00", OUTLINE);                   // cab
+  box(x - c * 1.0, y - s * 1.0, z + 0.3, a, 4.4, 2.3, 0.5, "#555b61", "#3e4348", OUTLINE);                  // flat bed
+  if (loaded) box(x - c * 1.0, y - s * 1.0, z + 0.8, a, 4.1, 1.8, 1.2, "#2a2a2a", "#1a1a1a", OUTLINE);      // the wreck
+  const on = Math.floor(now * 3) % 2;
+  box(x + c * 2.2, y + s * 2.2, z + 2.5, a, 0.3, 1.2, 0.2, on ? "#ffb000" : "#7a5500", "#7a5500");          // beacon
+}
+function sweeper(x, y, z, a, now) {
+  const c = Math.cos(a), s = Math.sin(a);
+  box(x + c * 1.6, y + s * 1.6, z + 0.3, a, 2.0, 2.0, 2.0, "#f4f4f0", "#9fd36b", OUTLINE);                  // cab
+  box(x - c * 1.2, y - s * 1.2, z + 0.3, a, 3.2, 2.1, 1.9, "#7bbf3a", "#5c9a26", OUTLINE);                  // tank
+  const sp = now * 12;                                                                                         // brushes
+  for (const side of [-1, 1]) box(x + c * 2.6 - s * side * 1.0, y + s * 2.6 + c * side * 1.0, z, sp + side, 0.7, 0.7, 0.15, "#d9c27a", "#a08a40");
+  const on = Math.floor(now * 3) % 2;
+  box(x + c * 1.6, y + s * 1.6, z + 2.4, a, 0.3, 1.0, 0.2, on ? "#ffb000" : "#7a5500", "#7a5500");
+}
+
+// Hard things near (x, y) for the player's physics: sim vehicles and wrecks, people (soft), trams and buses
+// (they keep to their real track: immovable). [{x, y, ang, L, W, kind, id, soft}]
+live.solids = (x, y, r = 30) => {
+  const out = [], t = live.now();
+  for (const [id, k, px, py, , a, sp, c] of inhabitants()) {
+    if (Math.abs(px - x) > r || Math.abs(py - y) > r) continue;
+    const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
+    if (k === 0) { const T = TRAFFIC[c % TRAFFIC.length]; out.push({ x: px, y: py, ang: a, L: T[1], W: T[2], kind: "car", id, vx, vy }); }
+    else if (k === 3) out.push({ x: px, y: py, ang: a, L: (c & 7) === 2 ? 6.4 : 5.4, W: 2.1, kind: "service", id, vx, vy });
+    else if (k === 5) { if (c & 16) out.push({ x: px, y: py, ang: a, L: 1.7, W: 0.6, kind: "down", id, soft: true }); else out.push({ x: px, y: py, ang: a, L: 4.3, W: 1.8, kind: "wreck", id }); }
+    else if (k === 2) out.push({ x: px, y: py, ang: a, L: 1.7, W: 0.6, kind: "bike", id, soft: true });
+    else if (k === 1 || k === 4) out.push({ x: px, y: py, ang: a, L: 0.5, W: 0.5, kind: "person", id, soft: true });
+  }
+  for (const v of vehicles) {
+    const rt = world.routes[v.route] || { type: 3 };
+    if (rt.type === 4) continue;                                    // on the river
+    const p = vehiclePose(v, t);
+    if (Math.abs(p.x - x) > r + 40 || Math.abs(p.y - y) > r + 40) continue;
+    if (rt.type === 0) {
+      const sh = world.shapes[v.shape];
+      for (let k = 0; k < 4; k++) { const q = chord(sh, p.d - k * TRAM_SEG - 0.6, TRAM_SEG - 1.2); out.push({ x: q.x, y: q.y, ang: q.ang, L: TRAM_SEG, W: 2.65, kind: "tram" }); }
+    } else { const b = chord(world.shapes[v.shape], p.d + 6, 12); out.push({ x: b.x, y: b.y, ang: b.ang, L: 12, W: 2.55, kind: "bus" }); }
+  }
+  return out;
+};
+
 function pin(sx, sy, icon) {
   const [cx, cy] = toCanvas(sx, sy);
   ctx.fillStyle = "#1f2428"; ctx.beginPath(); ctx.arc(cx, cy - 18 * TN.dpr, 13 * TN.dpr, 0, 7); ctx.fill();
@@ -873,6 +1002,7 @@ function frame(now) {
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
   ctx.clearRect(0, 0, w, h);
   hits = [];
+  decals = [];
   const on = document.getElementById("liveBtn")?.getAttribute("aria-pressed") === "true";
   const t = live.now(), rect = visibleRect();
   let items = [];
@@ -891,6 +1021,7 @@ function frame(now) {
     if (L("boats") && (TN.view.s >= 0.3 || TN.playing)) items.push(...boatItems(t, visibleRect(300)));
   }
   for (const f of live.layers) items.push(...f(t, rect));
+  drawDecals();                                                    // scorch marks lie under everything
   const world3d = items.filter((i) => !i.overlay).sort((a, b) => a.sy - b.sy);   // painter's order
   const flat = items.filter((i) => i.overlay);
   let tip = null;
@@ -910,6 +1041,7 @@ function frame(now) {
     if (it.lamps) for (const l of it.lamps) lights.push([...toCanvas(...project(l[0], l[1], l[2])), l[3]]);
   }
   live.lights = lights;
+  drawBooms();
   for (const it of flat) { it.draw(); consider(it); }
   if (tip) label(tip[0], tip[1] - 20 * TN.dpr, tip[2]);
   TN.liveStats = { vehicles: vehicles.length, inhabitants: snaps.at(-1)?.m.size || 0, planes: planes.length, trains: trains.length, drawn: world3d.length + flat.length };

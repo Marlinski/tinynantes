@@ -224,8 +224,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(bikes::run(app.http.clone(), app.origin, app.bikes.clone()));
     let web2 = web.clone();
     let sim = tokio::task::spawn_blocking(move || sim::build(&web2)).await??;
+    let mut sim = sim;
+    sim.load_marks(app.data.join("marks.json"));
     let world = sim::World::new(sim);
     tokio::spawn(sim::run(world.clone()));
+    tokio::spawn(feed_players(world.clone(), players.clone()));
     tokio::spawn(sim_inputs(app.clone(), world.clone()));
     tokio::spawn(bike_departures(app.clone(), world.clone()));
 
@@ -255,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/news", get(news_h))
         .route("/api/bikes", get(bikes_h))
         .route("/api/debug", post(debug_h))
+        .route("/api/impact", post(impact_h))
         .with_state(TalkState { app: app.clone(), world: world.clone(), players: players.clone() });
     let living = Router::new()
         .route("/api/world", get(world_ws))
@@ -342,7 +346,7 @@ async fn metrics_h(State(t): State<TalkState>) -> Response {
     }
     {
         let s = t.world.sim.read().await;
-        for (k, c) in ["car", "walker", "bike", "emergency", "marcher"].iter().zip(s.census()) {
+        for (k, c) in ["car", "walker", "bike", "emergency", "marcher", "wreck", "mark"].iter().zip(s.census()) {
             m.gauge("tn_sim_agents", &[("kind", k)], c as f64);
         }
         m.gauge("tn_sim_march_active", &[], s.marching().is_some() as u8 as f64);
@@ -1050,6 +1054,130 @@ fn upcoming(v: &serde_json::Value) -> Vec<String> {
         Some(format!("{name}{}{}", if place.is_empty() { String::new() } else { format!(", {place}") },
                      if when.is_empty() { String::new() } else { format!(" ({when})") }))
     }).collect()
+}
+
+// ---------------------------------------------------------------- crashes, knock-downs, carjacking
+
+/// Players who just caused a crash or ran someone over (name -> until): people flee from them for a while.
+static DANGER: std::sync::Mutex<Option<HashMap<String, f64>>> = std::sync::Mutex::new(None);
+/// Last impacts per player, for rate limiting.
+static IMPACTS: std::sync::Mutex<Option<HashMap<String, Vec<f64>>>> = std::sync::Mutex::new(None);
+
+fn mark_danger(name: &str, secs: f64) {
+    let t = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    DANGER.lock().unwrap().get_or_insert_with(HashMap::new).insert(name.to_string(), t + secs);
+}
+
+/// Five times a second: players' positions and speeds to the simulation (people step aside, cars stop, and
+/// everyone runs from a fast driver or one who just caused a crash).
+async fn feed_players(w: Arc<sim::World>, players: Arc<players::Players>) {
+    let mut last: HashMap<String, (f64, f64, f64)> = HashMap::new();
+    let mut iv = tokio::time::interval(Duration::from_millis(200));
+    loop {
+        iv.tick().await;
+        let t = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        let ps = players.positions().await;
+        let danger = DANGER.lock().unwrap().get_or_insert_with(HashMap::new).clone();
+        let mut out = vec![];
+        let mut seen = HashMap::new();
+        for (name, x, y, m) in ps {
+            let (vx, vy) = match last.get(&name) {
+                Some(&(px, py, pt)) if t - pt > 0.05 && t - pt < 2.0 => (((x - px) / (t - pt)) as f32, ((y - py) / (t - pt)) as f32),
+                _ => (0.0, 0.0),
+            };
+            seen.insert(name.clone(), (x, y, t));
+            let mode = match m.as_str() { c if c.starts_with("car") => 2, "bike" => 1, "heli" => 3, _ => 0 };
+            if mode == 3 {
+                continue; // up in the air
+            }
+            let fast = mode == 2 && (vx * vx + vy * vy).sqrt() > 11.0;
+            out.push(sim::PlayerIn { x: x as f32, y: y as f32, vx, vy, mode, danger: fast || danger.get(&name).is_some_and(|&u| u > t) });
+        }
+        last = seen;
+        w.sim.write().await.set_players(out);
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ImpactIn {
+    token: String,
+    /// "crash" (the player's car blew up), "hit" (ran someone over), "jack" (takes a car)
+    kind: String,
+    /// the inhabitant involved
+    id: Option<u32>,
+    x: f64,
+    y: f64,
+    #[serde(default)]
+    a: f64,
+    /// the player's car model (variant byte)
+    #[serde(default)]
+    model: u8,
+}
+
+/// POST /api/impact: what a player's driving did to the shared world. Checked against where the server last saw
+/// them (within 30 m) and rate-limited, so a client can't wreck the city from afar.
+async fn impact_h(State(t): State<TalkState>, axum::Json(q): axum::Json<ImpactIn>) -> Response {
+    let bad = |c: StatusCode, m: &str| (c, axum::Json(serde_json::json!({ "error": m }))).into_response();
+    let Some(player) = t.players.name_of(&q.token) else { return bad(StatusCode::UNAUTHORIZED, "connecte-toi d'abord") };
+    let Some((px, py)) = t.players.position_of(&player).await else { return bad(StatusCode::CONFLICT, "pas en jeu") };
+    if ((px - q.x).powi(2) + (py - q.y).powi(2)).sqrt() > 30.0 || !q.x.is_finite() || !q.y.is_finite() {
+        return bad(StatusCode::CONFLICT, "trop loin");
+    }
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    {
+        let mut m = IMPACTS.lock().unwrap();
+        let v = m.get_or_insert_with(HashMap::new).entry(player.clone()).or_default();
+        v.retain(|&x| now - x < 20.0);
+        let limit = match q.kind.as_str() { "crash" => 2, "jack" => 4, _ => 12 };
+        if v.len() >= limit {
+            return bad(StatusCode::TOO_MANY_REQUESTS, "doucement");
+        }
+        v.push(now);
+    }
+    // plausible? what the server itself saw: how fast they were going, in what, and (lag compensated) whether
+    // that inhabitant was really there on their screen. A forged report can then only do what driving could.
+    let (speed, mode) = t.players.motion_of(&player).await.unwrap_or((0.0, String::new()));
+    let ok = match q.kind.as_str() {
+        "crash" => (mode.starts_with("car") && speed > 9.0) || (mode == "heli" && speed > 4.0),
+        "hit" => mode.starts_with("car") && speed > 2.5,
+        _ => mode == "walk" || mode == "run",
+    };
+    if !ok {
+        crate::metrics::inc("tn_impacts_refused_total", &[("kind", if q.kind == "crash" { "crash" } else if q.kind == "hit" { "hit" } else { "jack" })], 1.0);
+        return bad(StatusCode::CONFLICT, "pas plausible");
+    }
+    let near = |id: u32, r: f32| t.world.came_near(id, q.x as f32, q.y as f32).is_some_and(|d| d < r);
+    let ids_ok: Option<u32> = q.id.filter(|&id| near(id, match q.kind.as_str() { "crash" => 10.0, "hit" => 6.0, _ => 7.0 }));
+    let mut s = t.world.sim.write().await;
+    let near = |_: &sim::Sim, id: u32, _r: f32| ids_ok == Some(id);
+    match q.kind.as_str() {
+        "crash" => {
+            let hit = q.id.filter(|&id| near(&s, id, 14.0));
+            let w = s.crash(q.x as f32, q.y as f32, q.a as f32, q.model, hit, now);
+            drop(s);
+            mark_danger(&player, 60.0);
+            axum::Json(serde_json::json!({ "wrecks": w })).into_response()
+        }
+        "hit" => {
+            let Some(id) = q.id.filter(|&id| near(&s, id, 10.0)) else { return bad(StatusCode::CONFLICT, "personne ici") };
+            let r = s.knock_down(id, now);
+            drop(s);
+            mark_danger(&player, 60.0);
+            axum::Json(serde_json::json!({ "down": r.is_some() })).into_response()
+        }
+        "jack" => {
+            let Some(id) = q.id.filter(|&id| near(&s, id, 16.0)) else { return bad(StatusCode::CONFLICT, "pas de voiture ici") };
+            match s.carjack(id, now) {
+                Some((model, p, a)) => {
+                    drop(s);
+                    mark_danger(&player, 20.0);
+                    axum::Json(serde_json::json!({ "model": model, "x": p[0], "y": p[1], "a": a })).into_response()
+                }
+                None => bad(StatusCode::CONFLICT, "pas une voiture"),
+            }
+        }
+        _ => bad(StatusCode::BAD_REQUEST, "kind"),
+    }
 }
 
 #[derive(serde::Deserialize)]
