@@ -395,6 +395,89 @@ def taxi():
     return m
 
 
+# ---------------------------------------------------------------- boats (z = 0 at the waterline)
+
+def _hull(m, L, W, z0, z1, deck, side, bow=0.22, stern=0.06):
+    """A hull plan: straight sides, pointed bow (bow = share of the length), slightly cut stern."""
+    pts = [(L / 2, 0.0), (L / 2 - L * bow, W / 2), (-L / 2 + L * stern, W / 2), (-L / 2, W / 2 * 0.8),
+           (-L / 2, -W / 2 * 0.8), (-L / 2 + L * stern, -W / 2), (L / 2 - L * bow, -W / 2)]
+    _slab(m, pts, z0, z1, deck, side)
+
+
+def maille_breze():
+    """T 47 destroyer (132.5 m, 12.7 m beam), grey, as moored at Quai de la Fosse."""
+    m = Model()
+    G, G2, D, B = (0.55, 0.58, 0.6), (0.42, 0.45, 0.48), (0.22, 0.23, 0.24), (0.12, 0.12, 0.13)
+    _hull(m, 132.5, 12.7, -0.6, 0.5, (0.55, 0.18, 0.15), (0.55, 0.18, 0.15), bow=0.3)   # boot-topping
+    _hull(m, 132.5, 12.7, 0.5, 5.5, (0.47, 0.5, 0.52), G2, bow=0.3)
+    m.box(-38.0, 30.0, -4.5, 4.5, 5.5, 9.5, G, G)                                          # superstructure
+    m.box(14.0, 30.0, -3.6, 3.6, 9.5, 13.0, G, G)                                          # bridge
+    m.box(24.0, 29.5, -3.0, 3.0, 13.0, 14.5, G, (0.18, 0.22, 0.27))                         # bridge windows
+    for x in (2.0, -16.0):                                                                  # funnels
+        m.box(x - 3.0, x + 3.0, -2.2, 2.2, 9.5, 17.0, G, G, taper=0.4)
+        m.box(x - 2.2, x + 2.2, -1.6, 1.6, 17.0, 18.0, B)
+    for x, z, h in ((40.0, 5.5, 3.0), (48.5, 5.5, 2.6), (-50.0, 5.5, 3.0)):               # gun turrets
+        m.box(x - 3.2, x + 3.2, -2.8, 2.8, z, z + h, G, G2, taper=0.6)
+        bx = 1 if x > 0 else -1
+        for yy in (-0.7, 0.7):
+            m.box(min(x, x + bx * 9.5), max(x, x + bx * 9.5), yy - 0.18, yy + 0.18, z + 1.4, z + 1.8, D)
+    m.box(20.0, 21.0, -0.5, 0.5, 14.5, 30.0, D)                                             # fore mast
+    m.box(17.0, 24.0, -0.2, 0.2, 24.0, 24.6, D)
+    m.box(-6.0, -5.0, -0.5, 0.5, 9.5, 24.0, D)                                              # main mast
+    m.box(-8.0, -3.0, -2.5, 2.5, 22.0, 22.6, D)                                             # radar
+    return m
+
+
+def belem():
+    """Three-masted barque (58 m over all, 8.8 m beam, masts ~34 m), white hull with a gilt band, sails furled."""
+    m = Model()
+    W, Wd, Gold, Wood, Mast, Sail = (0.95, 0.95, 0.93), (0.85, 0.86, 0.85), (0.85, 0.66, 0.25), (0.66, 0.5, 0.32), (0.3, 0.22, 0.15), (0.93, 0.91, 0.85)
+    _hull(m, 51.0, 8.8, -0.5, 4.2, Wood, W, bow=0.24)
+    m.box(-25.4, 19.0, -4.42, 4.42, 3.2, 3.6, Gold)                                          # gilt band
+    m.box(-25.0, 20.0, -4.45, 4.45, -0.5, 0.3, (0.25, 0.25, 0.27))                           # waterline
+    m.box(-25.0, -16.0, -3.6, 3.6, 4.2, 6.0, Wd, Wd)                                         # poop deck house
+    m.box(25.5, 33.0, -0.25, 0.25, 4.6, 5.4, Mast)                                           # bowsprit
+    for x, h, yards in ((14.0, 33.0, (12, 17, 22, 27, 31)), (0.0, 35.0, (12, 17, 22, 27, 31)), (-14.0, 28.0, ())):
+        m.box(x - 0.35, x + 0.35, -0.35, 0.35, 4.2, h, Mast)
+        for k, z in enumerate(yards):
+            w = 9.0 - k * 1.4
+            m.box(x - 0.25, x + 0.25, -w, w, z, z + 0.3, Mast)                                  # yard
+            m.box(x - 0.45, x + 0.15, -w * 0.92, w * 0.92, z + 0.3, z + 0.9, Sail)             # furled sail
+    m.box(-22.0, -14.0, -0.2, 0.2, 12.0, 12.3, Mast)                                         # gaff boom
+    return m
+
+
+def peniche(cargo=(0.3, 0.38, 0.3)):
+    """Freycinet barge (38.5 x 5.05 m): black hull, covered hold, wheelhouse and living quarters aft."""
+    m = Model()
+    H, Trim = (0.12, 0.12, 0.14), (0.7, 0.15, 0.12)
+    _hull(m, 38.5, 5.05, -0.4, 1.6, (0.25, 0.25, 0.26), H, bow=0.08, stern=0.04)
+    m.box(-19.0, 19.0, -2.55, 2.55, 1.3, 1.5, Trim)                                          # rubbing strake
+    m.box(-9.0, 16.0, -2.0, 2.0, 1.6, 2.6, cargo, cargo, taper=0.4)                          # hold covers
+    m.box(-18.0, -11.0, -2.3, 2.3, 1.6, 3.6, (0.93, 0.92, 0.88), (0.93, 0.92, 0.88))         # living quarters
+    m.box(-13.5, -11.0, -1.6, 1.6, 3.6, 5.0, (0.93, 0.92, 0.88), GLASS)                      # wheelhouse
+    m.box(-17.0, -16.6, -0.1, 0.1, 3.6, 6.0, H)                                              # flag pole
+    return m
+
+
+def sailboat():
+    m = Model()
+    _hull(m, 10.0, 3.3, -0.3, 1.1, (0.85, 0.8, 0.7), (0.96, 0.96, 0.95), bow=0.3)
+    m.box(-3.5, 0.5, -1.1, 1.1, 1.1, 1.7, (0.96, 0.96, 0.95), GLASS)                         # cabin
+    m.box(0.8, 1.0, -0.1, 0.1, 1.1, 14.0, (0.75, 0.76, 0.78))                                # mast
+    _fin(m, [(0.7, 2.2), (-3.8, 2.2), (0.7, 13.5)], -0.05, 0.05, (0.97, 0.97, 0.95), (0.97, 0.97, 0.95))   # mainsail
+    _fin(m, [(1.1, 1.8), (4.8, 1.4), (1.1, 12.0)], -0.05, 0.05, (0.92, 0.93, 0.95), (0.92, 0.93, 0.95))    # jib
+    return m
+
+
+def motorboat():
+    m = Model()
+    _hull(m, 8.0, 2.8, -0.3, 1.0, (0.96, 0.96, 0.95), (0.96, 0.96, 0.95), bow=0.35)
+    m.box(-3.6, 4.0, -1.42, 1.42, 0.2, 0.45, (0.12, 0.3, 0.6))                               # stripe
+    m.box(-1.5, 1.2, -1.0, 1.0, 1.0, 2.1, (0.96, 0.96, 0.95), GLASS, front=GLASS, taper=0.2)
+    return m
+
+
 LIVERY_TGV = ((0.93, 0.92, 0.93), (0.45, 0.15, 0.4), (0.82, 0.82, 0.84))
 LIVERY_TER = ((0.94, 0.94, 0.92), (0.12, 0.42, 0.7), (0.78, 0.8, 0.82))
 
@@ -435,6 +518,20 @@ def catalogue():
     out.append(("truck_box", box_truck(), 9.0))
     out.append(("car_taxi", taxi(), 12.0))
     out.append(("car_teal_hatch", car((0.2, 0.55, 0.55), "hatch"), 12.0))
+    # boats: moving ones in 16 directions; moored landmarks in their one real heading (water.json)
+    out.append(("boat_peniche", peniche(), 6.0))
+    out.append(("boat_peniche2", peniche((0.45, 0.3, 0.2)), 6.0))
+    out.append(("boat_sail", sailboat(), 9.0))
+    out.append(("boat_motor", motorboat(), 12.0))
+    try:
+        moored = json.loads((ROOT / "web" / "data" / "world" / "water.json").read_text())["moored"]
+    except (OSError, ValueError):
+        moored = []
+    for mo in moored:
+        if mo["ship"] == "maille_breze" and mo["len"] > 100:
+            out.append(("ship_maille_breze", maille_breze(), 5.5, [mo["a"]]))
+        elif mo["ship"] == "belem":
+            out.append(("ship_belem", belem(), 9.0, [mo["a"]]))
     return out
 
 
@@ -478,10 +575,10 @@ def render_sheet(items, view, cell=CELL):
     atlas = {}
     per_row = SHEET // cell
     slot = 0
-    for name, model, ppm in items:
+    for name, model, ppm, *rest in items:
         cells = []
-        for k in range(DIRS):
-            yaw = 2 * math.pi * k / DIRS
+        yaws = rest[0] if rest else [2 * math.pi * k / DIRS for k in range(DIRS)]
+        for yaw in yaws:
             V, C = model.mesh(yaw)
             tri = V.reshape(-1, 3, 3)
             nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
@@ -491,7 +588,7 @@ def render_sheet(items, view, cell=CELL):
             nrm[flip] *= -1
             N = np.repeat(nrm, 3, axis=0).astype("f4")
             cx, cy = (slot % per_row) * cell, (slot // per_row) * cell
-            ax, ay = cx + cell / 2, cy + cell * 0.7           # where the ground centre lands
+            ax, ay = cx + cell / 2, cy + cell * (0.7 if cell <= 256 else 0.62)   # where the ground centre lands
             prog["u_cell"].value = (ax * SS, ay * SS, ppm * SS, 0.0)
             vbo = ctx.buffer(np.hstack([V, C, N]).astype("f4").tobytes())
             vao = ctx.vertex_array(prog, [(vbo, "3f 3f 3f", "in_p", "in_c", "in_n")])
@@ -539,6 +636,14 @@ PROMPT_FLEET = ("Repaint these 3D renders of cars, vans, trucks and emergency ve
                 "sprites with dark outlines, in the same style as a pixel-art city map. Keep every vehicle exactly where "
                 "it is, with the same shape, size, direction, colours, stripes and roof lights. There are no people "
                 "anywhere: draw only the vehicles. Keep the plain empty grey background. Do not add or remove anything.")
+PROMPT_BOAT = ("Repaint these 3D renders of boats as crisp isometric pixel-art sprites with dark outlines, in the same "
+               "style as a pixel-art city map. Keep every boat exactly where it is, with the same shape, size, direction, "
+               "masts and colours. There is no water and there are no people: draw only the boats. Keep the plain empty "
+               "grey background. Do not add or remove anything.")
+PROMPT_BELEM = ("Repaint this 3D render of the Belem, a three-masted barque with a white hull, a thin gilt band, a wooden deck and "
+                "furled white sails on her yards, as a crisp isometric pixel-art sprite with dark outlines, in the same style as a "
+                "pixel-art city map. Keep the ship exactly where it is, with the same shape, size, direction and colours: the hull "
+                "stays white. There is no water and there are no other boats or people. Keep the plain empty grey background.")
 PROMPT_TRAIN = ("Repaint these 3D renders of a French train car as crisp isometric pixel-art sprites with dark outlines, in "
                 "the same style as a pixel-art city map. Keep every car exactly where it is, with the same shape, size, "
                 "direction and colours, windows along the sides. There are no people anywhere: draw only the train cars. "
@@ -565,7 +670,7 @@ def cut(painted, mask, render):
 
 def prompt_for(name):
     """The painting prompt of the sheet whose first sprite is `name`."""
-    for prefix, pr in (("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
+    for prefix, pr in (("ship_belem", PROMPT_BELEM), ("boat_", PROMPT_BOAT), ("ship_", PROMPT_BOAT), ("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
                        ("van_delivery", PROMPT_FLEET), ("walker", PROMPT_WALKERS), ("bike", PROMPT_BIKES)):
         if name.startswith(prefix):
             return pr
@@ -580,7 +685,7 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    LATER = ("walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal")
+    LATER = ("walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal", "boat_", "ship_")
     vehicles = [it for it in items if not it[0].startswith(LATER)]
     people = [it for it in items if it[0].startswith(("walker", "bike"))]
     aircraft = [it for it in items if it[0].startswith("heli")]
@@ -592,6 +697,9 @@ def main(argv):
     batches += [([it], 256) for it in big]
     fleet = [it for it in items if it[0].startswith(("ems_", "van_delivery", "truck_", "car_taxi", "car_teal"))]
     batches += [(fleet[s:s + 4], CELL) for s in range(0, len(fleet), 4)]
+    boats = [it for it in items if it[0].startswith("boat_")]
+    batches += [([it], 256) for it in boats]
+    batches += [([it], SHEET) for it in items if it[0].startswith("ship_")]
     atlas = {"dirs": DIRS, "sheets": []}
     for k, (batch, cell) in enumerate(batches):
         img, mask, entries = render_sheet(batch, view, cell)
@@ -601,7 +709,7 @@ def main(argv):
             if not pfile.exists():
                 pr = prompt_for(batch[0][0])
                 # seeds picked by eye: 3 gave the cleanest helicopters, 7 planes and trains without stray people
-                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET) else 1
+                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET, PROMPT_BOAT, PROMPT_BELEM) else 1
                 paint(img, prompt=pr, seed=seed).save(pfile)
             sprite = cut(Image.open(pfile), mask, img)
         else:

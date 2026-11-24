@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import time
 import math
 import sys
 import zipfile
@@ -620,6 +621,150 @@ def bases():
     print(f"bases: {len(out)} {counts}")
 
 
+def _overpass(q, tries=6):
+    for k in range(tries):
+        try:
+            r = requests.post("https://overpass-api.de/api/interpreter", data={"data": q}, timeout=180,
+                              headers={"User-Agent": "tinynantes-build"})
+            r.raise_for_status()
+            return r.json()["elements"]
+        except (requests.RequestException, ValueError, KeyError):
+            if k == tries - 1:
+                raise
+            time.sleep(10 * (k + 1))
+
+
+def _chain(ways):
+    """Join polylines that share end points into the longest runs (OSM rivers come in many short ways)."""
+    ways = [list(map(tuple, w)) for w in ways if len(w) > 1]
+    out = []
+    while ways:
+        cur = ways.pop()
+        grown = True
+        while grown:
+            grown = False
+            for k, w in enumerate(ways):
+                if math.dist(w[0], cur[-1]) < 1:
+                    cur += w[1:]
+                elif math.dist(w[-1], cur[-1]) < 1:
+                    cur += w[::-1][1:]
+                elif math.dist(w[-1], cur[0]) < 1:
+                    cur = w[:-1] + cur
+                elif math.dist(w[0], cur[0]) < 1:
+                    cur = w[::-1][:-1] + cur
+                else:
+                    continue
+                ways.pop(k); grown = True
+                break
+        out.append(cur)
+    return out
+
+
+def _polylen(p):
+    return sum(math.dist(a, b) for a, b in zip(p, p[1:]))
+
+
+def water():
+    """web/data/world/water.json, for the boats the viewer animates:
+    rivers: navigable centre lines (Loire and its arms, Erdre, Sèvre) as long runs, local metres;
+    moored: the ships that never leave (Maillé-Brézé museum destroyer; the Belem at her pontoon), with heading;
+    yards: boatyards (Chantier de l'Esclain) with the route a boat takes from the Loire to their slip."""
+    x0, y0, x1, y1 = geo.AREA
+    (lo0, la0), (lo1, la1) = _to_wgs.transform(x0, y0), _to_wgs.transform(x1, y1)
+    bb = f"({la0},{lo0},{la1},{lo1})"
+    els = _overpass(f'[out:json][timeout:120];(way[waterway~"^(river|canal)$"][name]{bb};'
+                    f'way["historic"="ship"]{bb};way["name"="Ponton Belem"]{bb};way["waterway"="boatyard"]{bb};);out geom tags;')
+    ox, oy = geo.ORIGIN
+    L = lambda g: [_to_l93.transform(p["lon"], p["lat"]) for p in g]
+    rel = lambda xy: [round(xy[0] - ox, 1), round(xy[1] - oy, 1)]
+    by_name = defaultdict(list)
+    moored, yards = [], []
+    eau = None
+    for e in els:
+        t = e.get("tags", {})
+        g = L(e.get("geometry", []))
+        if not g:
+            continue
+        if t.get("waterway") in ("river", "canal"):
+            by_name[t["name"]].append(g)
+            continue
+        a = np.array(g); c = a.mean(0)
+        u, sv, vt = np.linalg.svd(a - c); d = vt[0]; pr = (a - c) @ d
+        head = math.atan2(d[1], d[0])
+        if t.get("historic") == "ship":
+            moored.append({"ship": "maille_breze", "name": t.get("name", ""), "p": rel(c), "a": round(head, 3),
+                           "len": round(float(pr.max() - pr.min()), 1)})
+        elif t.get("name") == "Ponton Belem":
+            moored.append({"ship": "belem", "name": "Belem", "p": rel(c), "a": round(head, 3)})
+        elif t.get("waterway") == "boatyard":
+            yards.append({"name": t.get("name", ""), "c": c})
+    rivers = []
+    for name, ws in by_name.items():
+        for run in _chain(ws):
+            pieces, cur = [], []                                     # OSM ways run far beyond the map: clip
+            for q in run:
+                if geo.inside(q[0], q[1], 150):
+                    cur.append(q)
+                elif cur:
+                    pieces.append(cur); cur = []
+            pieces.append(cur)
+            for pc in pieces:
+                if len(pc) > 1 and _polylen(pc) > 800:
+                    rivers.append({"name": name, "p": [rel(q) for q in pc[::2] + [pc[-1]]] if len(pc) > 400 else [rel(q) for q in pc]})
+    # a boatyard's route: along the nearest river line for ~2.5 km, then straight to the last water point
+    # towards the yard (BD TOPO water mask), so boats stop at the slip, not in the yard
+    out_yards = []
+    for y in yards:
+        best = None
+        for ri, r in enumerate(rivers):
+            for k, q in enumerate(r["p"]):
+                d = math.dist((q[0] + ox, q[1] + oy), y["c"])
+                if best is None or d < best[0]:
+                    best = (d, ri, k)
+        if best is None or best[0] > 600:
+            continue
+        _, ri, k = best
+        r = rivers[ri]["p"]
+        # walk upstream or downstream (whichever side is longer) for 2.5 km
+        up, down = r[:k + 1][::-1], r[k:]
+        side = up if _polylen(up) > _polylen(down) else down
+        path, acc = [side[0]], 0.0
+        for q in side[1:]:
+            acc += math.dist(path[-1], q); path.append(q)
+            if acc > 2500:
+                break
+        path = path[::-1]                                   # from far away to the river point near the yard
+        sx, sy = path[-1][0] + ox, path[-1][1] + oy
+        tx, ty = y["c"]
+        bbox = (min(sx, tx) - 20, min(sy, ty) - 20, max(sx, tx) + 20, max(sy, ty) + 20)
+        m, (gx0, gy1), res = ign.mosaic("eau", bbox)
+        last = (sx, sy)
+        for f in np.linspace(0, 1, 60):
+            px, py = sx + (tx - sx) * f, sy + (ty - sy) * f
+            rr, cc = int((gy1 - py) / res), int((px - gx0) / res)
+            if 0 <= rr < m.shape[0] and 0 <= cc < m.shape[1] and m[rr, cc]:
+                last = (px, py)
+            else:
+                break
+        bx, by = last[0] - (tx - sx) / (math.dist((sx, sy), (tx, ty)) or 1) * 6, last[1] - (ty - sy) / (math.dist((sx, sy), (tx, ty)) or 1) * 6
+        path.append(rel((bx, by)))
+        out_yards.append({"name": y["name"], "path": path})
+    T = Terrain()
+    for r in rivers:                                                       # water surface height per point
+        zs = T.z([[q[0] + ox, q[1] + oy] for q in r["p"]])
+        cap = float(np.median(zs)) + 0.8                                   # bridges and banks under the line
+        r["p"] = [[q[0], q[1], round(min(float(z), cap), 1)] for q, z in zip(r["p"], zs)]
+    for y in out_yards:
+        zs = T.z([[q[0] + ox, q[1] + oy] for q in y["path"]])
+        y["path"] = [[q[0], q[1], round(float(z), 1)] for q, z in zip(y["path"], zs)]
+    for mo in moored:
+        mo["z"] = round(float(T.z([[mo["p"][0] + ox, mo["p"][1] + oy]])[0]), 1)
+    (WEB / "water.json").write_text(json.dumps({"rivers": rivers, "moored": moored, "yards": out_yards},
+                                               ensure_ascii=False, separators=(",", ":")))
+    print(f"water: {len(rivers)} river runs ({', '.join(sorted({r['name'] for r in rivers}))}), "
+          f"{len(moored)} moored ships, {len(out_yards)} yards")
+
+
 def main(argv):
     what = argv[0] if argv else "all"
     if what in ("osm", "all"):
@@ -636,6 +781,8 @@ def main(argv):
         rooms()
     if what in ("bases", "all"):
         bases()
+    if what in ("water", "all"):
+        water()
 
 
 if __name__ == "__main__":

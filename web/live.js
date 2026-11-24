@@ -30,6 +30,7 @@ export const live = {
   open: null,                                 // set by game.js: open(kind, data) shows the side panel
 };
 window.TNLive = live;
+live.boats = () => boatItems(live.now(), [-1e9, -1e9, 1e9, 1e9]).map((b) => [b.sx, b.sy, b.tip?.()]);   // debug: where the boats are
 
 // ---------------------------------------------------------------- loading
 async function getJSON(u) { const r = await fetch(u); if (!r.ok) throw new Error(`${u}: ${r.status}`); return r.json(); }
@@ -43,6 +44,7 @@ async function loadWorld() {
   world.terrain = await loadTerrain(meta);
   try { world.rails = await getJSON("data/world/rails.json"); world.rails.routes.forEach(withCum); } catch { /* optional */ }
   try { world.pois = await getJSON("data/world/pois.json"); } catch { /* optional */ }
+  try { world.water = boatPlan(await getJSON("data/world/water.json")); } catch { /* optional */ }
   try { world.airport = (await getJSON("api/airport")).p; } catch { /* optional */ }
   world.ready = true;
 }
@@ -347,7 +349,8 @@ function sprite(name, x, y, z, ang, key, opt) {
   if (!im?.complete || !im.naturalWidth) return false;
   const f = ang / (2 * Math.PI) * A.dirs;
   let k = ((Math.round(f) % A.dirs) + A.dirs) % A.dirs;
-  if (key != null) {
+  if (e.cells.length === 1) k = 0;                                  // a moored ship: drawn in its one real heading
+  else if (key != null) {
     const prev = spriteDir.get(key);
     if (prev != null) {
       let dd = f - prev; dd -= Math.round(dd / A.dirs) * A.dirs;      // signed distance in directions
@@ -427,6 +430,71 @@ function transitItems(t, rect) {
       out.push({ sx, sy, h: 3.0, lamps: vlamps(b.x, b.y, b.z, b.ang, 12, 2.4, 0.9), draw: () => { shadow(b.x, b.y, b.z, b.ang, 12, 2.55);
         if (!sprite("bus", b.x, b.y, b.z, b.ang, v.id)) coach(b.x, b.y, b.z, b.ang, 12, 2.55, 3.0, color); }, hit, tip });
     }
+  }
+  return out;
+}
+// ---------------------------------------------------------------- boats
+// Moored landmarks (Maillé-Brézé, Belem) where OSM has them; barges, sailing and motor boats going up and down
+// the Loire, the Erdre and the Sèvre; boats calling at the boatyards (Chantier de l'Esclain). Positions are a
+// function of the clock only, so every viewer sees the same boats in the same places.
+const BOAT = {              // sprite, length, beam, speed m/s, label
+  peniche: ["boat_peniche", 38.5, 5.05, 2.6, "Péniche"], peniche2: ["boat_peniche2", 38.5, 5.05, 2.4, "Péniche"],
+  sail: ["boat_sail", 10, 3.3, 2.2, "Voilier"], motor: ["boat_motor", 8, 2.8, 4.5, "Bateau à moteur"],
+};
+const RIVER_FLEET = {       // per km of river: which boats
+  "La Loire": ["peniche", "sail", "motor", "peniche2", "motor"], "La Loire - Bras de la Madeleine": ["motor", "sail"],
+  "La Loire - Bras de Pirmil": ["motor", "peniche", "sail"], "L'Erdre": ["sail", "motor", "sail"],
+  "La Sèvre Nantaise": ["motor", "sail"],
+};
+const SHIP_INFO = { ship_maille_breze: ["Maillé-Brézé", "escorteur d'escadre (1957), musée naval"],
+                    ship_belem: ["Belem", "trois-mâts barque (1896), à quai"] };
+function boatPlan(w) {
+  const runs = [];
+  for (const r of w.rivers) {
+    const fleet = RIVER_FLEET[r.name];
+    if (!fleet) continue;
+    withCum(r);
+    const n = Math.max(1, Math.round(r.len / 1000));
+    for (let k = 0; k < n; k++) runs.push({ shape: r, kind: fleet[k % fleet.length], phase: (k * 7919 + r.len * 13) % 100000, river: r.name, id: `${r.name}:${k}` });
+  }
+  const yards = (w.yards || []).filter((y) => y.name && y.path.length > 1).map((y) => withCum({ name: y.name, p: y.path }));
+  const moored = (w.moored || []).filter((m) => (m.ship === "maille_breze" && m.len > 100) || m.ship === "belem")
+    .map((m) => ({ ...m, sprite: `ship_${m.ship}` }));
+  return { runs, yards, moored };
+}
+function boatItems(t, rect) {
+  const out = [], W = world.water;
+  if (!W) return out;
+  const push = (id, kind, p, ang, tip) => {
+    const [name, L, B] = BOAT[kind];
+    const [sx, sy] = project(p.x, p.y, p.z);
+    if (!inRect(sx, sy, rect)) return;
+    out.push({ sx, sy, h: kind === "sail" ? 12 : 3, lamps: vlamps(p.x, p.y, p.z, ang, L, B * 0.6, 1.4, { noBeam: true }),
+               draw: () => { if (!sprite(name, p.x, p.y, p.z, ang, id)) { shadow(p.x, p.y, p.z, ang, L, B); box(p.x, p.y, p.z, ang, L, B, 1.2, "#f4f1ea", "#2c3440", OUTLINE); } },
+               hit: { r: 14, open: () => {} }, tip });
+  };
+  for (const b of W.runs) {                       // back and forth along the river, turning at each end
+    const v = BOAT[b.kind][3], L = b.shape.len, u = (b.phase + t * v) % (2 * L);
+    const fwd = u < L, d = fwd ? u : 2 * L - u;
+    const p = along(b.shape, d);
+    push(b.id, b.kind, p, fwd ? p.ang : p.ang + Math.PI, () => [BOAT[b.kind][4], b.river]);
+  }
+  for (const y of W.yards) {                      // two boats an hour: in, 10 min at the slip, out
+    for (const [k, kind] of [[0, "sail"], [1, "motor"]]) {
+      const v = BOAT[kind][3], go = y.len / v, cycle = 1800, u = (t + k * 900) % cycle;
+      let d, out_;
+      if (u < go) { d = u * v; out_ = false; } else if (u < go + 600) { d = y.len; out_ = false; }
+      else if (u < 2 * go + 600) { d = y.len - (u - go - 600) * v; out_ = true; } else continue;
+      const p = along(y, d);
+      push(`${y.name}:${k}`, kind, p, out_ ? p.ang + Math.PI : p.ang, () => [BOAT[kind][4], out_ ? `quitte le ${y.name}` : u < go ? `vers le ${y.name}` : `au ${y.name}`]);
+    }
+  }
+  for (const m of W.moored) {
+    const [sx, sy] = project(m.p[0], m.p[1], m.z);
+    if (!inRect(sx, sy, rect)) continue;
+    const [n, what] = SHIP_INFO[m.sprite];
+    out.push({ sx, sy, h: m.ship === "belem" ? 34 : 25, draw: () => { sprite(m.sprite, m.p[0], m.p[1], m.z, 0, null); },
+               hit: { r: 30, open: () => {} }, tip: () => [n, what] });
   }
   return out;
 }
@@ -637,6 +705,7 @@ function frame() {
     items.push(...planeItems(t, visibleRect(4000)));
     if (TN.view.s >= 0.6 || TN.playing) items.push(...transitItems(t, rect), ...trainItems(t, rect), ...inhabitantItems(t, rect));
     items.push(...placeItems(t, rect), ...poiItems(t, rect));
+    if (TN.view.s >= 0.3 || TN.playing) items.push(...boatItems(t, visibleRect(300)));
   }
   for (const f of live.layers) items.push(...f(t, rect));
   const world3d = items.filter((i) => !i.overlay).sort((a, b) => a.sy - b.sy);   // painter's order
