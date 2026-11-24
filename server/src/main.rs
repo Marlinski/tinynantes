@@ -498,7 +498,7 @@ async fn airport(State(app): State<Arc<App>>) -> Response {
     let (x, y) = l93::project(planes::NTE.0, planes::NTE.1);
     let v = serde_json::json!({"name": "Nantes Atlantique (NTE)", "p": [x - app.origin.0, y - app.origin.1],
         "arrivals": arr, "departures": dep,
-        "note": "Mouvements observés en ADS-B (adsb.lol) ; routes : adsbdb.com"});
+        "note": "Mouvements observés en ADS-B (adsb.fi, adsb.lol) ; routes : adsbdb.com"});
     json(Bytes::from(v.to_string()))
 }
 

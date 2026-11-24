@@ -103,7 +103,7 @@ live.open = async (kind, d) => {
     const near = TN.playing && Math.hypot(st.p[0] - me.x, st.p[1] - me.y) < 25;
     openSide(`<p class="kicker">🚲 Naolib Vélo</p><h2>${esc(st.name)}</h2><p>${esc(st.address)}</p>
       <p><b>${n}</b> vélo${n > 1 ? "s" : ""} disponible${n > 1 ? "s" : ""} · <b>${st.docks}</b> place${st.docks > 1 ? "s" : ""} libre${st.docks > 1 ? "s" : ""} · ${st.capacity} au total
-      ${st.renting ? "" : "<br><span class=late>station fermée</span>"}</p>
+      ${st.renting ? "" : "<br><span class=late>station hors service</span> <small>(l'opérateur ne la fait plus fonctionner : 0 vélo, 0 place, plus de nouvelles)</small>"}</p>
       ${near ? (me.rental ? `<button class="act" id="bikeAct">Rendre le vélo (E)</button>` :
         n > 0 && st.renting ? `<button class="act" id="bikeAct">Louer un vélo (E)</button>` : "") : TN.playing ? `<p class="src">Approche-toi de la station pour louer un vélo.</p>` : ""}
       ${live.bikesStale ? `<p class="src">⚠ Le flux de l'opérateur ne bouge plus depuis le ${new Date(live.bikesStale * 1000).toLocaleString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })} : chiffres figés, les départs de cyclistes sont simulés en attendant.</p>` : ""}

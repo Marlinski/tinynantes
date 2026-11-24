@@ -188,10 +188,12 @@ function bikeStationItems(t, rect) {
     const [x, y] = st.p, z = zAt(x, y);
     const [sx, sy] = project(x, y, z);
     if (!inRect(sx, sy, rect)) continue;
-    out.push({ sx, sy, h: 1.2, hit: { r: 12, open: () => live.open?.("bikes", st) }, tip: () => [`🚲 ${st.name}`, `${Math.max(0, n)} vélos · ${st.docks} places`],
+    out.push({ sx, sy, h: 1.2, hit: { r: 12, open: () => live.open?.("bikes", st) }, tip: () => [`🚲 ${st.name}`, st.renting ? `${Math.max(0, n)} vélos · ${st.docks} places` : "hors service"],
       draw: () => {
         box(x, y, z, 0.3, 4, 0.5, 0.25, "#6b737b", "#4a5158", OUTLINE);                            // dock rail
-        box(x - 2.2, y, z, 0.3, 0.3, 0.3, 2.2, "#ffd400", "#d9a800", OUTLINE);                     // totem
+        // totem: Naolib yellow, or grey when the operator has the station out of service
+        box(x - 2.2, y, z, 0.3, 0.3, 0.3, 2.2, st.renting ? "#ffd400" : "#8a8f94", st.renting ? "#d9a800" : "#62676c", OUTLINE);
+        if (!st.renting) return;
         const k = Math.min(Math.max(0, n), 6);
         for (let i = 0; i < k; i++) box(x - 1.5 + i * 0.6, y + 0.2 * Math.sin(0.3) * i, z + 0.25, 1.87, 1.5, 0.1, 0.9, "#9be15d", "#3e8d2f");
       } });

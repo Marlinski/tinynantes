@@ -1,4 +1,4 @@
-//! Aircraft around Nantes Atlantique (NTE) from ADS-B (adsb.lol, ODbL), with routes from adsbdb.com
+//! Aircraft around Nantes Atlantique (NTE) from ADS-B (adsb.fi open data; adsb.lol, ODbL, as a fallback), with routes from adsbdb.com
 //! (looked up once per callsign and cached), and a reconstructed airport board: aircraft seen landing at or
 //! taking off from NTE in the last hours.
 
@@ -16,7 +16,29 @@ use crate::l93;
 use crate::store::Store;
 
 pub const NTE: (f64, f64) = (-1.6107, 47.1532); // lon, lat
-const FEED: &str = "https://api.adsb.lol/v2/point/47.1532/-1.6107/60";
+/// ADS-B within 60 NM of the airport: adsb.fi's open data first (1 request/s allowed, list under "aircraft"),
+/// adsb.lol as a fallback (500 requests a day per IP since 2026: not enough on its own at one every 20 s; "ac").
+const FEEDS: [&str; 2] = [
+    "https://opendata.adsb.fi/api/v2/lat/47.1532/lon/-1.6107/dist/60",
+    "https://api.adsb.lol/v2/point/47.1532/-1.6107/60",
+];
+
+/// The feed, and whether it came from the fallback (then we poll less often, to stay within its daily quota).
+async fn fetch_feed(http: &reqwest::Client) -> Result<(Value, bool)> {
+    let mut last = None;
+    for (k, url) in FEEDS.iter().enumerate() {
+        match async { Ok::<Value, anyhow::Error>(http.get(*url).send().await?.error_for_status()?.json().await?) }.await {
+            Ok(mut v) => {
+                if v["ac"].is_null() {
+                    v["ac"] = v["aircraft"].take();
+                }
+                return Ok((v, k > 0));
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap())
+}
 const ROUTE: &str = "https://api.adsbdb.com/v0/callsign/";
 
 #[derive(Clone, Serialize, serde::Deserialize)]
@@ -92,8 +114,9 @@ async fn route(http: &reqwest::Client, cs: &str) -> Option<Route> {
     Some(Route { airline: r["airline"]["name"].as_str().map(String::from), from: airport(&r["origin"]), to: airport(&r["destination"]) })
 }
 
-pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>, store: &Store) -> Result<()> {
-    let v: Value = http.get(FEED).send().await?.error_for_status()?.json().await?;
+/// Returns true when the data came from the fallback feed.
+pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>, store: &Store) -> Result<bool> {
+    let (v, fallback) = fetch_feed(http).await?;
     let now = chrono::Utc::now().timestamp();
     let mut planes = vec![];
     let mut need = vec![];
@@ -177,7 +200,7 @@ pub async fn refresh(http: &reqwest::Client, o: Origin, sky: &Arc<RwLock<Sky>>, 
     s.planes = planes;
     s.at = now;
     s.error = None;
-    Ok(())
+    Ok(fallback)
 }
 
 fn s_nte_x(o: Origin) -> f64 {
@@ -188,10 +211,11 @@ fn s_nte_y(o: Origin) -> f64 {
 }
 
 pub async fn run(http: reqwest::Client, o: Origin, sky: Arc<RwLock<Sky>>, store: Arc<Store>) {
-    let mut wait = 20;
+    // frugal: every 30 s (planes move slowly at this scale, the viewer interpolates), every 3 min on the fallback
+    let mut wait = 30;
     loop {
         match refresh(&http, o, &sky, &store).await {
-            Ok(()) => wait = 20,
+            Ok(fallback) => wait = if fallback { 180 } else { 30 },
             Err(e) => {
                 tracing::warn!("planes: {e:#}");
                 sky.write().await.error = Some(format!("{e:#}"));
