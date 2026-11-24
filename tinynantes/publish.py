@@ -21,6 +21,7 @@ DATA = ROOT / "web" / "data"
 N = geo.TILE_PX
 
 # name, lon, lat (checked against OpenStreetMap / Nominatim, 2026-11)
+# landmarks shown on the map (lon, lat): checked against OpenStreetMap (Overpass/Nominatim), 2026-11-24
 PLACES = [
     ("Château des ducs de Bretagne", -1.54931, 47.21612),
     ("Cathédrale Saint-Pierre-et-Saint-Paul", -1.55018, 47.21837),
@@ -31,22 +32,22 @@ PLACES = [
     ("Bouffay", -1.55345, 47.21495),
     ("Les Machines de l'île", -1.56434, 47.206),
     ("Hangar à Bananes", -1.57285, 47.19991),
-    ("Les Anneaux de Buren", -1.5737, 47.2000),
+    ("Les Anneaux de Buren", -1.5724, 47.20276),
     ("Tour Bretagne", -1.55823, 47.2176),
     ("Gare de Nantes", -1.5418, 47.2171),
     ("Jardin des Plantes", -1.54295, 47.21977),
-    ("Lieu Unique", -1.54581, 47.21576),
+    ("Lieu Unique", -1.54510, 47.21592),
     ("Cours Cambronne", -1.56315, 47.21195),
     ("Place du Commerce", -1.55785, 47.21335),
     ("Île Feydeau", -1.5555, 47.2120),
-    ("Cité des Congrès", -1.54502, 47.21371),
-    ("Palais de Justice", -1.5660, 47.2063),
+    ("Cité des Congrès", -1.54371, 47.21350),
+    ("Palais de Justice", -1.56152, 47.20777),
     ("Place du Bouffay", -1.55342, 47.21477),
     ("Médiathèque Jacques Demy", -1.56218, 47.21119),
     ("Mémorial de l'abolition de l'esclavage", -1.56453, 47.20948),
     ("Pont Anne-de-Bretagne", -1.5661, 47.20818),
-    ("Grue Titan jaune", -1.5715, 47.2015),
-    ("CHU Hôtel-Dieu", -1.5545, 47.2105),
+    ("Grue Titan jaune", -1.56975, 47.20509),
+    ("CHU Hôtel-Dieu", -1.5534, 47.21044),
 ]
 
 
