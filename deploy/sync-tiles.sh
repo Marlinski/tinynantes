@@ -12,4 +12,4 @@ for d in web/data/h[0-9]; do [ -d "$d" ] && dirs="$dirs $d"; done
 # shellcheck disable=SC2086
 rsync -a --checksum --delete --info=stats1 ${1:-} -e "ssh ${SSH_OPTS:-}" \
   $dirs web/data/headings.json web/data/tiles.json minix:Work/tinynantes-tiles/
-[ -z "${1:-}" ] && echo "tiles version $(cat web/data/tiles.json) mirrored to minix:Work/tinynantes-tiles/"
+if [ -z "${1:-}" ]; then echo "tiles version $(cat web/data/tiles.json) mirrored to minix:Work/tinynantes-tiles/"; fi
