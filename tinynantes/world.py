@@ -519,6 +519,74 @@ def rail_routes():
     print(f"rail routes from the station: {len(routes)}", flush=True)
 
 
+def rooms():
+    """web/data/world/rooms.json: for every place, the BD TOPO building it is in (or the closest one within 6 m):
+    footprint (outer ring, local metres), height, floors, so the viewer can open the building like a doll's house
+    when someone goes in."""
+    def inside(ring, x, y):
+        c = False
+        for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+            if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                c = not c
+        return c
+
+    def dist(ring, x, y):
+        best = 1e9
+        for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+            dx, dy = x2 - x1, y2 - y1
+            t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy or 1)))
+            best = min(best, math.hypot(x - x1 - t * dx, y - y1 - t * dy))
+        return best
+
+    def area(ring):
+        return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]))) / 2
+
+    def simplify(ring, tol=0.3):
+        # drop vertices closer than tol to the line through their neighbours (one pass is enough for BD TOPO)
+        out = []
+        n = len(ring)
+        for k in range(n):
+            a, b, c = ring[k - 1], ring[k], ring[(k + 1) % n]
+            if dist([a, c], b[0], b[1]) > tol:
+                out.append(b)
+        return out if len(out) >= 3 else ring
+
+    meta = json.loads((WEB / "world.json").read_text())
+    ox, oy = meta["origin"]
+    pois = json.loads((WEB / "pois.json").read_text())
+    out, cache = {}, {}
+    for p in pois:
+        x, y = p["p"][0] + ox, p["p"][1] + oy
+        key = (int(x // 250), int(y // 250))
+        if key not in cache:
+            bb = (key[0] * 250 - 30, key[1] * 250 - 30, key[0] * 250 + 280, key[1] * 250 + 280)
+            polys = []
+            for b in ign.buildings(bb):
+                ring = [tuple(c) for c in b["rings"][0]]
+                if ring and ring[0] == ring[-1]:
+                    ring = ring[:-1]
+                if len(ring) >= 3 and 8 < area(ring) < 6000:
+                    polys.append((ring, b))
+            cache[key] = polys
+        best, bd = None, 6.0
+        for ring, b in cache[key]:
+            d = 0.0 if inside(ring, x, y) else dist(ring, x, y)
+            if d < bd:
+                best, bd = (ring, b), d
+            if d == 0.0:
+                break
+        if not best:
+            continue
+        ring, b = best
+        ring = simplify(ring)
+        if len(ring) > 80:
+            continue
+        out[p["id"]] = {"r": [[round(cx - ox, 1), round(cy - oy, 1)] for cx, cy in ring],
+                        "h": round(float(b.get("height") or 9.0), 1), "f": b.get("floors"), "z": p["p"][2]}
+    (WEB / "rooms.json").write_text(json.dumps(out, separators=(",", ":")))
+    print(f"rooms: {len(out)} of {len(pois)} places", flush=True)
+
+
 def main(argv):
     what = argv[0] if argv else "all"
     if what in ("osm", "all"):
@@ -531,6 +599,8 @@ def main(argv):
         nav()
     if what in ("rails", "all"):
         rail_routes()
+    if what in ("rooms", "all"):
+        rooms()
 
 
 if __name__ == "__main__":

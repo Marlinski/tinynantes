@@ -255,6 +255,7 @@ async function startPlaying() {
   Object.assign(me, { x: spot[0], y: spot[1], z: groundZ(...spot), mode: "walk", v: 0, ride: null });
   me.color = colorFor(session.name);
   TN.playing = true;
+  loadRooms();
   document.body.classList.add("playing");
   $("playBtn").setAttribute("aria-pressed", "true");
   $("liveBtn").setAttribute("aria-pressed", "true");
@@ -265,7 +266,7 @@ async function startPlaying() {
   hud();
 }
 function stopPlaying() {
-  TN.playing = false; me.ride = null;
+  TN.playing = false; me.ride = null; room = null; live.room = null;
   document.body.classList.remove("playing");
   $("playBtn").setAttribute("aria-pressed", "false");
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
@@ -423,7 +424,8 @@ let hintKey = "";
 function updateHint() {
   const el = $("hint");
   let txt = "", key = "";
-  if (TN.playing && !me.ride && me.mode !== "car") {
+  if (room) { key = "in:" + room.id; txt = `La carte · ${room.name}`; }
+  else if (TN.playing && !me.ride && me.mode !== "car") {
     const p = nearestPlace(me.x, me.y);
     if (p) { key = p.id; txt = `Entrer · ${p.t.name}`; }
   } else if (me.ride) { key = "ride"; txt = "Descendre au prochain arrêt"; }
@@ -436,16 +438,157 @@ $("hint").onclick = () => action();
 // walking into a building next to a place = going in (once, until you've walked away)
 let insideId = null;
 function bumpInto(tx, ty) {
-  if (me.mode !== "walk") return;
+  if (me.mode !== "walk" || room) return;
   const n = navAt(tx, ty);
   if (!n || !(n.f & F_BUILDING)) return;
   const p = nearestPlace(tx, ty, 12);
   if (!p || p.id === insideId) return;
+  enter(p, tx, ty);
+}
+
+// ---------------------------------------------------------------- inside a place
+// The building (BD TOPO footprint, rooms.json) opens like a doll's house: the rest of it is ghosted, its ground
+// floor drawn with a floor, the back walls and furniture that depends on the kind of place; you walk inside and
+// leave through any wall.
+let rooms = null, room = null;
+async function loadRooms() {
+  if (rooms) return rooms;
+  try { rooms = await getJSON("data/world/rooms.json"); } catch { rooms = {}; }
+  return rooms;
+}
+function inRing(r, x, y) {
+  let c = false;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const [x1, y1] = r[i], [x2, y2] = r[j];
+    if ((y1 > y) !== (y2 > y) && x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)) c = !c;
+  }
+  return c;
+}
+function edgeDist(r, x, y) {
+  let best = 1e9;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const [x1, y1] = r[j], [x2, y2] = r[i], dx = x2 - x1, dy = y2 - y1;
+    const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy || 1)));
+    best = Math.min(best, Math.hypot(x - x1 - t * dx, y - y1 - t * dy));
+  }
+  return best;
+}
+const KIND_STYLE = (k) => {
+  const v = (k || "").split("=")[1] || "";
+  if (/^(bar|pub|nightclub|biergarten)$/.test(v)) return { kind: "bar", floor: "#6b4a32", wall: "#3d3a46" };
+  if (/^(restaurant|fast_food|food_court)$/.test(v)) return { kind: "resto", floor: "#9a6d45", wall: "#e8dcc4" };
+  if (/^(cafe|ice_cream|bakery|pastry)$/.test(v)) return { kind: "cafe", floor: "#c9b49a", wall: "#efe6d6" };
+  if ((k || "").startsWith("shop=")) return { kind: "shop", floor: "#d9d4ca", wall: "#f2efe8" };
+  return { kind: "hall", floor: "#b8ad9c", wall: "#e9e4da" };
+};
+// furniture: [x, y, ang, L, W, H, top colour, side colour]
+function furnish(r, z, st) {
+  const out = [];
+  const xs = r.map((p) => p[0]), ys = r.map((p) => p[1]);
+  // longest edge: the counter / shelves run along it
+  let le = 0, la = 0, lm = null;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const L = Math.hypot(r[i][0] - r[j][0], r[i][1] - r[j][1]);
+    if (L > le) { le = L; la = Math.atan2(r[i][1] - r[j][1], r[i][0] - r[j][0]); lm = [(r[i][0] + r[j][0]) / 2, (r[i][1] + r[j][1]) / 2]; }
+  }
+  const cx = xs.reduce((a, b) => a + b) / xs.length, cy = ys.reduce((a, b) => a + b) / ys.length;
+  // the counter: 1 m inside the longest wall, towards the middle
+  if (lm && st.kind !== "hall") {
+    const nx = cx - lm[0], ny = cy - lm[1], n = Math.hypot(nx, ny) || 1;
+    const px = lm[0] + nx / n * 1.2, py = lm[1] + ny / n * 1.2, L = Math.min(le - 2, st.kind === "bar" ? 8 : 4);
+    if (L > 1.5 && inRing(r, px, py)) out.push([px, py, la, L, 0.7, 1.05, "#d8c7a8", st.kind === "bar" ? "#5a3b28" : "#8a6a4c"]);
+  }
+  const cos = Math.cos(la), sin = Math.sin(la);
+  const step = st.kind === "shop" ? 2.4 : 2.6;
+  for (let a = -40; a <= 40; a += step) for (let b = -40; b <= 40; b += step) {
+    const x = cx + a * cos - b * sin, y = cy + a * sin + b * cos;
+    if (!inRing(r, x, y) || edgeDist(r, x, y) < 1.3) continue;
+    if (out.some((f) => Math.hypot(f[0] - x, f[1] - y) < 1.8)) continue;
+    if (st.kind === "shop") out.push([x, y, la, 1.8, 0.5, 1.6, "#f4f1ea", "#b9b2a6"]);            // shelf
+    else if (st.kind === "hall") out.push([x, y, la, 1.2, 0.6, 0.8, "#cfc6b6", "#8f8576"]);
+    else {
+      const round = st.kind === "cafe";
+      out.push([x, y, la, round ? 0.7 : 0.9, round ? 0.7 : 0.9, 0.75, "#e9e2d2", "#7a5a3e"]);       // table
+      for (const s of [-1, 1]) out.push([x + s * 0.75 * cos, y + s * 0.75 * sin, la, 0.42, 0.42, 0.48, "#a8402f", "#6e2a20"]);  // chairs
+    }
+    if (out.length > 90) break;
+  }
+  return out;
+}
+async function enter(p, tx, ty) {
+  const R = (await loadRooms())[p.id];
   insideId = p.id;
   me.v = 0;
-  toast(`Tu entres : ${p.t.name}`);
   live.open("poi", p);
+  if (!R) { toast(`${p.t.name}`); return; }
+  const st = KIND_STYLE(p.k);
+  room = { id: p.id, name: p.t.name, r: R.r, z: R.z ?? me.z, h: R.h || 9, st, furniture: furnish(R.r, R.z ?? me.z, st) };
+  live.room = room;
+  // step in: from where you bumped, 1.5 m towards the middle
+  const cx = R.r.reduce((a, q) => a + q[0], 0) / R.r.length, cy = R.r.reduce((a, q) => a + q[1], 0) / R.r.length;
+  let x = tx ?? me.x, y = ty ?? me.y;
+  for (let k = 0; k < 20 && !(inRing(R.r, x, y) && edgeDist(R.r, x, y) > 0.8); k++) { x += (cx - x) * 0.15; y += (cy - y) * 0.15; }
+  me.x = x; me.y = y; me.z = room.z;
+  toast(`Tu entres : ${p.t.name}`);
 }
+function leave() {
+  if (!room) return;
+  toast(`Tu sors de ${room.name}`);
+  room = null; live.room = null;
+}
+live.under.push(() => {
+  if (!room || !TN.playing) return;
+  const c = live.ctx, { r, z, h, st } = room, wallH = Math.min(3.4, h);
+  const P = (x, y, zz) => live.toCanvas(...live.project(x, y, zz));
+  const poly = (pts) => { c.beginPath(); pts.forEach((q, k) => (k ? c.lineTo(...q) : c.moveTo(...q))); c.closePath(); };
+  const lo = r.map(([x, y]) => P(x, y, z)), top = r.map(([x, y]) => P(x, y, z + h)), mid = r.map(([x, y]) => P(x, y, z + wallH));
+  // 1. the building above the ground floor: ghosted (its roof and walls painted on the tile disappear)
+  c.save();
+  c.fillStyle = "rgba(226,234,242,0.8)";                          // frosted glass
+  poly(top); c.fill(); poly(lo); c.fill();
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    c.beginPath(); c.moveTo(...lo[j]); c.lineTo(...lo[i]); c.lineTo(...top[i]); c.lineTo(...top[j]); c.closePath(); c.fill();
+  }
+  c.strokeStyle = "rgba(60,80,100,0.5)"; c.lineWidth = 1 * TN.dpr; c.setLineDash([4 * TN.dpr, 4 * TN.dpr]);
+  poly(top); c.stroke();
+  for (let i = 0; i < r.length; i++) { c.beginPath(); c.moveTo(...lo[i]); c.lineTo(...top[i]); c.stroke(); }
+  c.setLineDash([]);
+  // 2. the floor, with planks / tiles
+  c.fillStyle = st.floor; poly(lo); c.fill();
+  c.save(); poly(lo); c.clip();
+  c.strokeStyle = "rgba(0,0,0,0.12)"; c.lineWidth = 1 * TN.dpr;
+  const xs = r.map((q) => q[0]), ys = r.map((q) => q[1]);
+  for (let x = Math.floor(Math.min(...xs)); x < Math.max(...xs); x += st.kind === "shop" ? 1 : 0.5) {
+    c.beginPath(); c.moveTo(...P(x, Math.min(...ys), z)); c.lineTo(...P(x, Math.max(...ys), z)); c.stroke();
+  }
+  if (st.kind === "shop") for (let y = Math.floor(Math.min(...ys)); y < Math.max(...ys); y += 1) {
+    c.beginPath(); c.moveTo(...P(Math.min(...xs), y, z)); c.lineTo(...P(Math.max(...xs), y, z)); c.stroke();
+  }
+  c.restore();
+  // 3. walls: the far ones full height (one storey), the near ones cut low so you see in
+  const back = TN.man.axes[2];
+  const ccw = r.reduce((a, q, i) => { const n = r[(i + 1) % r.length]; return a + (q[0] * n[1] - n[0] * q[1]); }, 0) > 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const a = r[j], b = r[i];
+    let nx = b[1] - a[1], ny = a[0] - b[0];                       // outward normal for a counter-clockwise ring
+    if (!ccw) { nx = -nx; ny = -ny; }
+    const far = nx * back[0] + ny * back[1] > 0;                    // facing away from the camera: a back wall
+    const hh = far ? wallH : 0.5;
+    const A = P(a[0], a[1], z), B = P(b[0], b[1], z), C = P(b[0], b[1], z + hh), D = P(a[0], a[1], z + hh);
+    c.fillStyle = far ? live.shade(st.wall, 0.82 + 0.15 * Math.abs(nx) / (Math.hypot(nx, ny) || 1)) : live.shade(st.wall, 0.55);
+    c.beginPath(); c.moveTo(...A); c.lineTo(...B); c.lineTo(...C); c.lineTo(...D); c.closePath(); c.fill();
+    c.strokeStyle = "rgba(0,0,0,0.25)"; c.stroke();
+  }
+  c.restore();
+});
+// furniture and the warm light, as items so people sort among the tables
+live.layers.push(() => {
+  if (!room || !TN.playing) return [];
+  return room.furniture.map(([x, y, a, L, W, H, top, side]) => {
+    const [sx, sy] = live.project(x, y, room.z);
+    return { sx, sy, h: H, room: true, draw: () => live.box(x, y, room.z, a, L, W, H, top, side) };
+  });
+});
 
 // E: get on / off transit, or go into the place in front of you
 function action() {
@@ -473,7 +616,8 @@ function action() {
   }
   // places: the closest one within reach
   const bp = nearestPlace(me.x, me.y, REACH + 4);
-  if (bp) { insideId = bp.id; live.open("poi", bp); return; }
+  if (room) { live.open("poi", live.world.pois.find((q) => q.id === room.id)); return; }
+  if (bp) { if (me.mode === "walk") enter(bp); else { insideId = bp.id; live.open("poi", bp); } return; }
   const st = live.world.rails?.station;
   if (st && Math.hypot(st[0] - me.x, st[1] - me.y) < 80) { live.open("station"); return; }
   toast("Rien ici. Approche-toi d'un arrêt (tram, bus, Navibus) ou d'un lieu.");
@@ -519,7 +663,7 @@ function step() {
           bumpInto(me.x + wx * 0.8, me.y + wy * 0.8);
       } else me.v = Math.max(0, me.v - 8 * dt);
     }
-    me.z = groundZ(me.x, me.y);
+    me.z = room ? room.z : groundZ(me.x, me.y);
   }
   const [sx, sy] = live.project(me.x, me.y, me.z);
   const v = TN.view, k = 1 - Math.exp(-dt * 6);
@@ -536,6 +680,12 @@ function step() {
 }
 function moveBy(dx, dy) {
   const m = me.mode;
+  if (room) {
+    const nx = me.x + dx, ny = me.y + dy;
+    if (inRing(room.r, nx, ny)) { me.x = nx; me.y = ny; return true; }
+    if (walkable(m, nx, ny) || walkable(m, nx + dx * 4, ny + dy * 4)) { me.x = nx; me.y = ny; leave(); return true; }
+    return false;
+  }
   if (!walkable(m, me.x, me.y)) { me.x += dx; me.y += dy; return true; }   // stuck inside: let them walk out
   if (walkable(m, me.x + dx, me.y + dy)) { me.x += dx; me.y += dy; return true; }
   if (walkable(m, me.x + dx, me.y)) { me.x += dx; return true; }      // slide along walls
@@ -609,7 +759,9 @@ live.layers.push(() => {
     const [x, y, z] = curPos(o, now);
     items.push(...avatarItems(o, x, y, z, o.a, o.m, o.name, false));
   }
-  items.push(...avatarItems(me, me.x, me.y, me.z, me.a, me.ride ? me.ride.kind : me.mode, session?.name || "", true));
+  const mine = avatarItems(me, me.x, me.y, me.z, me.a, me.ride ? me.ride.kind : me.mode, session?.name || "", true);
+  if (room) mine.forEach((it) => (it.room = true));
+  items.push(...mine);
   return items;
 });
 

@@ -21,10 +21,12 @@ let hits = [];                                // clickable things drawn this fra
 
 export const live = {
   world, project, toCanvas, zAt, along, vehiclePose, occluded, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
+  get ctx() { return ctx; }, room: null,
   get vehicles() { return vehicles; }, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
   now: () => Date.now() / 1000 + clockSkew,
   layers: [],                                 // functions (t) -> items, added by game.js
+  under: [],                                  // functions drawn before the items (game.js: the opened building)
   open: null,                                 // set by game.js: open(kind, data) shows the side panel
 };
 window.TNLive = live;
@@ -539,8 +541,9 @@ function frame() {
     if (P && it.tip && Math.hypot(cx - P[0] * TN.dpr, hy - P[1] * TN.dpr) < it.hit.r * TN.dpr) tip = [cx, hy, it.tip()];
   };
   const lights = [];
+  for (const f of live.under) f(t);
   for (const it of world3d) {
-    if (it.sy && occluded(it.sx, it.sy - (it.h || 2) * COS45 * 0.5, it.sy)) continue;
+    if (it.sy && !it.room && occluded(it.sx, it.sy - (it.h || 2) * COS45 * 0.5, it.sy)) continue;
     it.draw(); consider(it);
     if (it.light) lights.push([...toCanvas(it.sx, it.sy), it.light]);
   }
