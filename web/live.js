@@ -715,7 +715,11 @@ function inhabitantItems(t, rect) {
       const person = (c & 16) !== 0, burning = (c & 32) !== 0, heli = (c & 64) !== 0;
       boomOnce(id, x, y, z, burning && !person);
       out.push({ sx, sy, h: person ? 0.3 : 1.5, hit, draw: () => {
-        if (person) { downed(x, y, z, a, CLOTHES[(c & 7) % CLOTHES.length]); return; }
+        if (person) {
+          blood(x, y, z, a, id);
+          if (!sprite(`down_${c & 7}`, x, y, z, a, id)) downed(x, y, z, a, CLOTHES[(c & 7) % CLOTHES.length]);
+          return;
+        }
         shadow(x, y, z, a, 4.4, 1.9);
         ctx.save(); ctx.filter = "brightness(0.28) saturate(0.15) contrast(1.2)";
         const ok = heli ? sprite("heli_0", x, y, z, a, id) : sprite(TRAFFIC[(c & 15) % TRAFFIC.length][0], x, y, z, a, id);
@@ -934,6 +938,31 @@ function smoke(x, y, z, id, burning) {
     ctx.beginPath(); ctx.arc(cx, cy, (0.8 + f * 3) * s, 0, 7); ctx.fill();
   }
 }
+// a pool of blood under someone knocked down: spreads for ~20 s from when we first saw it, then stays; a few
+// drops around. Dark and flat, no splatter: an accident, not a horror film.
+const bloodSeen = new Map();
+function blood(x, y, z, a, id) {
+  const t0 = bloodSeen.get(id) ?? (bloodSeen.set(id, performance.now() - (snapsFresh() ? 0 : 60000)), bloodSeen.get(id));
+  if (bloodSeen.size > 300) bloodSeen.delete(bloodSeen.keys().next().value);
+  const g = Math.min(1, (performance.now() - t0) / 20000), R = 0.3 + 0.7 * Math.sqrt(g);
+  const c = Math.cos(a), s = Math.sin(a), cx = x + c * 0.5, cy = y + s * 0.5;     // under the chest
+  const ring = (r, wob) => Array.from({ length: 16 }, (_, k) => {
+    const an = k / 16 * Math.PI * 2, rr = r * (1 + wob * Math.sin(k * 2.7 + id) + 0.08 * Math.sin(k * 5.1 + id * 3));
+    return toCanvas(...project(cx + Math.cos(an) * rr * 1.25 * c - Math.sin(an) * rr * s, cy + Math.cos(an) * rr * 1.25 * s + Math.sin(an) * rr * c, z + 0.03));
+  });
+  const fill = (pts, col) => { ctx.fillStyle = col; ctx.beginPath(); pts.forEach((p, k) => (k ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.fill(); };
+  fill(ring(R, 0.18), "rgba(92,10,12,.88)");
+  fill(ring(R * 0.7, 0.12), "rgba(128,16,18,.9)");
+  const [hx, hy] = toCanvas(...project(cx - 0.15, cy - 0.1, z + 0.03)), u = TN.view.s * TN.dpr;
+  ctx.fillStyle = "rgba(255,190,190,.18)"; ctx.beginPath(); ctx.ellipse(hx, hy, R * 0.35 * u, R * 0.15 * u, 0, 0, 7); ctx.fill();   // sheen
+  if (g > 0.2) for (let k = 0; k < 4; k++) {                          // a few drops
+    const an = id * 1.3 + k * 1.9, d = R + 0.4 + (k % 2) * 0.5;
+    const [px, py] = toCanvas(...project(cx + Math.cos(an) * d, cy + Math.sin(an) * d, z + 0.03));
+    ctx.fillStyle = "rgba(100,12,14,.85)"; ctx.fillRect(Math.round(px), Math.round(py), Math.max(1, Math.round(0.18 * u)), Math.max(1, Math.round(0.14 * u)));
+  }
+}
+live.towTruck = (...a) => towTruck(...a);
+live.sweeper = (...a) => sweeper(...a);
 function downed(x, y, z, a, col) {                                  // someone lying on the road
   box(x, y, z, a, 1.7, 0.5, 0.25, col, shade(col, 0.8), OUTLINE);
   box(x + Math.cos(a) * 0.95, y + Math.sin(a) * 0.95, z, a, 0.3, 0.3, 0.25, "#e0b48a", "#c9986c", OUTLINE);

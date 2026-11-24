@@ -1173,7 +1173,7 @@ async fn impact_h(State(t): State<TalkState>, axum::Json(q): axum::Json<ImpactIn
                     mark_danger(&player, 20.0);
                     axum::Json(serde_json::json!({ "model": model, "x": p[0], "y": p[1], "a": a })).into_response()
                 }
-                None => bad(StatusCode::CONFLICT, "pas une voiture"),
+                None => bad(StatusCode::CONFLICT, "rien à prendre ici"),
             }
         }
         _ => bad(StatusCode::BAD_REQUEST, "kind"),

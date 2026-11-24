@@ -169,39 +169,100 @@ def navibus():
     return m
 
 
-def person(coat, legs=(0.18, 0.2, 0.26), phase=0.0, bike=False, skin=(0.93, 0.76, 0.62), hair=(0.25, 0.17, 0.1)):
-    """A walker (legs apart by `phase`) or a cyclist. Slightly larger than life (x1.6) so they read on the map."""
+def person(coat, legs=(0.18, 0.2, 0.26), phase=0.0, bike=False, skin=(0.93, 0.76, 0.62), hair=(0.25, 0.17, 0.1),
+           style=0):
+    """A walker (legs apart by `phase`) or a cyclist, slightly larger than life (x1.6) so they read on the map.
+    Proportions a touch stylised (bigger head) so a face, hair and hands survive at 20 px tall.
+    style: 0 short hair + trousers, 1 long hair + skirt, 2 cap + trousers, 3 bun + trousers and a bag."""
     m = Model()
     K = 1.6
+    shoe = (0.1, 0.09, 0.09)
     if bike:
         frame = (0.12, 0.13, 0.14)
         m.wheel(-0.55 * K, 0, r=0.33 * K, w=0.05 * K, col=frame)
         m.wheel(0.55 * K, 0, r=0.33 * K, w=0.05 * K, col=frame)
         m.box(-0.5 * K, 0.5 * K, -0.03 * K, 0.03 * K, 0.33 * K, 0.42 * K, frame)
         m.box(0.42 * K, 0.5 * K, -0.25 * K, 0.25 * K, 0.85 * K, 0.9 * K, frame)                         # handlebar
+        m.box(-0.3 * K, -0.12 * K, -0.07 * K, 0.07 * K, 0.5 * K, 0.55 * K, DARK)                         # saddle
         z0 = 0.5 * K
-        m.box(-0.2 * K, 0.0, -0.09 * K, 0.09 * K, z0, z0 + 0.42 * K, legs)                               # legs on pedals
+        for side in (-1, 1):                                                                             # legs on pedals
+            m.box(-0.2 * K, 0.08 * K, side * 0.08 * K - 0.05 * K, side * 0.08 * K + 0.05 * K, z0 - 0.15 * K, z0 + 0.05 * K, legs)
+            m.box(0.02 * K, 0.14 * K, side * 0.08 * K - 0.05 * K, side * 0.08 * K + 0.05 * K, z0 - 0.4 * K, z0 - 0.1 * K, legs)
+            m.box(0.04 * K, 0.18 * K, side * 0.08 * K - 0.05 * K, side * 0.08 * K + 0.05 * K, z0 - 0.45 * K, z0 - 0.38 * K, shoe)
+        zt = z0 + 0.08 * K
     else:
         z0 = 0.0
+        LEG = 0.72 * K
         for side, sgn in ((-1, 1), (1, -1)):
-            dx = sgn * phase * 0.16 * K
-            m.box(dx - 0.07 * K, dx + 0.07 * K, side * 0.11 * K - 0.06 * K, side * 0.11 * K + 0.06 * K, 0, 0.82 * K, legs)
-            m.box(dx - 0.05 * K, dx + 0.11 * K, side * 0.11 * K - 0.06 * K, side * 0.11 * K + 0.06 * K, 0, 0.07 * K, DARK)  # shoe
-    zt = z0 + (0.82 * K if not bike else 0.42 * K)
+            dx = sgn * phase * 0.15 * K
+            y0, y1 = side * 0.09 * K - 0.06 * K, side * 0.09 * K + 0.06 * K
+            col = skin if style == 1 else legs
+            m.box(dx - 0.065 * K, dx + 0.065 * K, y0, y1, 0.06 * K, LEG, col)                            # leg
+            m.box(dx - 0.06 * K, dx + 0.12 * K, y0 - 0.005, y1 + 0.005, 0, 0.08 * K, shoe)               # shoe
+        if style == 1:                                                                                 # skirt
+            m.box(-0.14 * K, 0.14 * K, -0.2 * K, 0.2 * K, LEG - 0.3 * K, LEG + 0.02 * K, legs, taper=0.04 * K)
+        else:
+            m.box(-0.12 * K, 0.12 * K, -0.19 * K, 0.19 * K, LEG - 0.08 * K, LEG + 0.02 * K, legs)       # hips
+        zt = LEG
     lean = 0.12 * K if bike else 0.0
-    m.box(-0.11 * K + lean, 0.11 * K + lean, -0.2 * K, 0.2 * K, zt, zt + 0.6 * K, coat)                    # torso
-    for side in (-1, 1):                                                                                     # arms
-        dx = (-side * phase * 0.12 * K) if not bike else 0.2 * K
-        m.box(dx - 0.05 * K + lean, dx + 0.05 * K + lean, side * 0.25 * K - 0.05 * K, side * 0.25 * K + 0.05 * K,
-              zt + 0.1 * K, zt + 0.58 * K, coat)
-    m.box(-0.09 * K + lean, 0.09 * K + lean, -0.09 * K, 0.09 * K, zt + 0.6 * K, zt + 0.82 * K, skin, front=skin)  # head
-    m.box(-0.1 * K + lean, 0.07 * K + lean, -0.1 * K, 0.1 * K, zt + 0.76 * K, zt + 0.86 * K, hair)          # hair
+    T = 0.5 * K                                                                                        # torso height
+    m.box(-0.12 * K + lean, 0.12 * K + lean, -0.2 * K, 0.2 * K, zt, zt + T, coat, taper=0.03 * K)       # torso, shoulders
+    m.box(-0.125 * K + lean, 0.125 * K + lean, -0.205 * K, 0.205 * K, zt, zt + 0.06 * K, tuple(c * 0.75 for c in coat))  # hem
+    m.box(0.11 * K + lean, 0.125 * K + lean, -0.03 * K, 0.03 * K, zt + 0.12 * K, zt + T - 0.04 * K, tuple(c * 0.8 for c in coat))  # zip
+    for side in (-1, 1):                                                                               # arms + hands
+        dx = (-side * phase * 0.13 * K) if not bike else 0.22 * K
+        y0, y1 = side * 0.25 * K - 0.055 * K, side * 0.25 * K + 0.055 * K
+        m.box(dx - 0.055 * K + lean, dx + 0.055 * K + lean, y0, y1, zt + 0.12 * K, zt + T - 0.02 * K, coat)
+        m.box(dx - 0.05 * K + lean, dx + 0.05 * K + lean, y0 + 0.005, y1 - 0.005, zt + 0.04 * K, zt + 0.13 * K, skin)
+    if style == 3 and not bike:                                                                        # shoulder bag
+        m.box(-0.2 * K, -0.08 * K, 0.2 * K, 0.27 * K, zt + 0.05 * K, zt + 0.25 * K, (0.45, 0.3, 0.18))
+    hz = zt + T
+    m.box(-0.05 * K + lean, 0.05 * K + lean, -0.05 * K, 0.05 * K, hz, hz + 0.05 * K, skin)             # neck
+    H0, H1 = hz + 0.05 * K, hz + 0.33 * K
+    face = tuple(min(1.0, c * 1.04) for c in skin)
+    m.box(-0.13 * K + lean, 0.13 * K + lean, -0.13 * K, 0.13 * K, H0, H1, skin, front=face)            # head
+    for side in (-1, 1):                                                                               # eyes
+        m.box(0.125 * K + lean, 0.14 * K + lean, side * 0.055 * K - 0.022 * K, side * 0.055 * K + 0.022 * K,
+              H0 + 0.15 * K, H0 + 0.2 * K, (0.08, 0.07, 0.07))
+    m.box(-0.14 * K + lean, 0.1 * K + lean, -0.14 * K, 0.14 * K, H1 - 0.08 * K, H1 + 0.03 * K, hair)  # hair on top
+    m.box(-0.145 * K + lean, -0.06 * K + lean, -0.14 * K, 0.14 * K, H0 + 0.08 * K, H1, hair)          # back of the head
+    if style == 1:
+        m.box(-0.15 * K + lean, -0.07 * K + lean, -0.15 * K, 0.15 * K, hz - 0.12 * K, H1 - 0.05 * K, hair)  # long hair
+    elif style == 2:
+        cap = tuple(c * 0.7 for c in coat)
+        m.box(-0.14 * K + lean, 0.14 * K + lean, -0.14 * K, 0.14 * K, H1 - 0.02 * K, H1 + 0.08 * K, cap)
+        m.box(0.12 * K + lean, 0.25 * K + lean, -0.11 * K, 0.11 * K, H1 - 0.02 * K, H1 + 0.01 * K, cap)   # peak
+    elif style == 3:
+        m.box(-0.2 * K + lean, -0.11 * K + lean, -0.06 * K, 0.06 * K, H1 - 0.1 * K, H1 + 0.02 * K, hair)  # bun
+    return m
+
+
+def lying(coat, legs, skin, hair, style, k):
+    """Someone knocked down: the walker on their back on the road, one arm out, one knee bent; centred."""
+    m = person(coat, legs=legs, phase=0.35, skin=skin, hair=hair, style=style)
+    H = 1.75 * 1.6
+    # standing frame (x forward, z up) -> lying on the back: head towards +x, front (x) up
+    c, s_ = math.cos(0.25 if k % 2 else -0.2), math.sin(0.25 if k % 2 else -0.2)
+    def tf(v):
+        x, y, z = v
+        X, Z = z - H / 2, x + 0.2 * 1.6
+        return (X * c - y * s_, X * s_ + y * c, Z * 0.85)
+    m.tris = [(tuple(tf(v) for v in tri), col) for tri, col in m.tris]
     return m
 
 
 COATS = [(0.72, 0.18, 0.16), (0.17, 0.38, 0.6), (0.85, 0.62, 0.2), (0.25, 0.45, 0.3), (0.42, 0.3, 0.6), (0.86, 0.84, 0.8),
          (0.16, 0.17, 0.2), (0.75, 0.42, 0.52)]
 HAIRS = [(0.25, 0.17, 0.1), (0.1, 0.08, 0.07), (0.75, 0.6, 0.3), (0.55, 0.3, 0.15)]
+SKINS = [(0.93, 0.76, 0.62), (0.62, 0.43, 0.3), (0.98, 0.84, 0.72), (0.42, 0.28, 0.2), (0.8, 0.6, 0.45)]
+LEGS = [(0.18, 0.2, 0.26), (0.24, 0.3, 0.45), (0.15, 0.15, 0.16), (0.42, 0.36, 0.28), (0.2, 0.28, 0.42), (0.3, 0.3, 0.32),
+        (0.55, 0.47, 0.36), (0.18, 0.2, 0.26)]
+STYLES = [0, 1, 2, 3, 1, 0, 3, 2]
+
+
+def looks(k):
+    """Coat, trousers, skin, hair and style of person k (walkers, cyclists and the knocked-down share them)."""
+    return COATS[k], LEGS[k], SKINS[(k * 3) % len(SKINS)], HAIRS[k % 4], STYLES[k]
 
 CAR_COLORS = {"white": (0.9, 0.9, 0.88), "black": (0.15, 0.16, 0.18), "grey": (0.58, 0.61, 0.65), "red": (0.72, 0.15, 0.14),
               "blue": (0.17, 0.33, 0.56), "silver": (0.78, 0.79, 0.8), "green": (0.28, 0.38, 0.25), "yellow": (0.85, 0.66, 0.2)}
@@ -533,11 +594,13 @@ def catalogue():
     out.append(("tram_mid", tram(False), 9.0))
     out.append(("navibus", navibus(), 4.8))
     # people: 8 coats x 2 walking phases, and 8 cyclists (one sheet of 16 directions x ... rows)
-    for k, coat in enumerate(COATS):
+    for k in range(len(COATS)):
+        coat, legs, skin, hair, style = looks(k)
         for ph in (0, 1):
-            out.append((f"walker_{k}_{ph}", person(coat, phase=(1.0 if ph else -1.0), hair=HAIRS[k % 4]), 22.0))
-    for k, coat in enumerate(COATS):
-        out.append((f"bike_{k}", person(coat, bike=True, hair=HAIRS[k % 4]), 16.0))
+            out.append((f"walker_{k}_{ph}", person(coat, legs, phase=(1.0 if ph else -1.0), skin=skin, hair=hair, style=style), 22.0))
+    for k in range(len(COATS)):
+        coat, legs, skin, hair, style = looks(k)
+        out.append((f"bike_{k}", person(coat, legs, bike=True, skin=skin, hair=hair, style=0 if style == 1 else style), 16.0))
     for k, p in enumerate(HELI_PITCH):
         out.append((f"heli_{k}", helicopter(p), 13.5))
     # big things: one per sheet (256 px cells)
@@ -560,6 +623,8 @@ def catalogue():
     out.append(("boat_peniche2", peniche((0.45, 0.3, 0.2)), 6.0))
     out.append(("boat_sail", sailboat(), 9.0))
     out.append(("boat_motor", motorboat(), 12.0))
+    for k in range(len(COATS)):                       # knocked down (sheets at the end: older numbering kept)
+        out.append((f"down_{k}", lying(*looks(k), k), 22.0))
     out.append(("elephant_0", grand_elephant(0), 7.0))
     out.append(("elephant_1", grand_elephant(1), 7.0))
     try:
@@ -661,6 +726,11 @@ PROMPT_BIKES = ("Repaint these 3D renders of cyclists as detailed isometric pixe
                 "and clothes colours. Keep the plain grey background. Do not add or remove anything.")
 
 
+PROMPT_DOWN = ("Repaint these 3D renders of small people lying on their back on the ground as detailed isometric pixel-art "
+               "people, in the same style as a pixel-art city map. Keep every person exactly where it is, with the same "
+               "pose, size, direction and clothes colours. No blood. Keep the plain grey background. "
+               "Do not add or remove anything.")
+
 PROMPT_HELI = ("Repaint these 3D renders of a small red helicopter body as crisp isometric pixel-art sprites with dark "
                "outlines, in the same style as a pixel-art city map. Keep every helicopter exactly where it is, with "
                "the same shape, size, direction, tilt, colours and black landing skids. Do not draw any rotor blades. "
@@ -731,7 +801,7 @@ def cut(painted, mask, render):
 def prompt_for(name):
     """The painting prompt of the sheet whose first sprite is `name`."""
     for prefix, pr in (("elephant_", PROMPT_ELEPHANT), ("ship_belem", PROMPT_BELEM), ("boat_", PROMPT_BOAT), ("ship_", PROMPT_BOAT), ("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
-                       ("van_delivery", PROMPT_FLEET), ("walker", PROMPT_WALKERS), ("bike", PROMPT_BIKES)):
+                       ("van_delivery", PROMPT_FLEET), ("walker", PROMPT_WALKERS), ("bike", PROMPT_BIKES), ("down_", PROMPT_DOWN)):
         if name.startswith(prefix):
             return pr
     return PROMPT
@@ -745,7 +815,7 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    LATER = ("elephant_", "walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal", "boat_", "ship_")
+    LATER = ("elephant_", "walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal", "boat_", "ship_", "down_")
     vehicles = [it for it in items if not it[0].startswith(LATER)]
     people = [it for it in items if it[0].startswith(("walker", "bike"))]
     aircraft = [it for it in items if it[0].startswith("heli")]
@@ -761,6 +831,7 @@ def main(argv):
     batches += [([it], 256) for it in boats]
     batches += [([it], SHEET) for it in items if it[0].startswith("ship_")]
     batches += [([it], 256) for it in items if it[0].startswith("elephant_")]
+    batches += [([it for it in items if it[0].startswith("down_")], 64)]
     atlas = {"dirs": DIRS, "sheets": []}
     for k, (batch, cell) in enumerate(batches):
         img, mask, entries = render_sheet(batch, view, cell)

@@ -24,7 +24,7 @@ const HELP: &[(&str, &str, &str)] = &[
     ("tn_llm_tokens_total", "counter", "Language model tokens, by kind and direction (in, out)"),
     ("tn_crashes_total", "counter", "Players' cars blown up, by what they hit (wall, vehicle)"),
     ("tn_knockdowns_total", "counter", "Inhabitants run over by players"),
-    ("tn_carjacks_total", "counter", "Cars taken from inhabitants by players"),
+    ("tn_carjacks_total", "counter", "Vehicles taken from inhabitants by players, by what (car, service, bike)"),
     ("tn_impacts_refused_total", "counter", "Collision reports from players the server found implausible, by kind"),
     ("tn_service_dispatches_total", "counter", "Service vehicles sent to a scene, by service"),
     ("tn_sim_reroutes_total", "counter", "Sim cars that turned round out of a jam to find another way"),

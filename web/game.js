@@ -495,12 +495,12 @@ function nearestPlace(x, y, r = REACH) {
   }
   return bp;
 }
-let hintKey = "";
+let hintKey = "", jackT = null;
 function updateHint() {
   const el = $("hint");
   let txt = "", key = "";
   if (room) { key = "in:" + room.id; txt = `La carte · ${room.name}`; }
-  else if (TN.playing && !me.ride && me.mode === "walk" && nearestCar()) { key = "jack"; txt = "Voler la voiture"; }
+  else if (TN.playing && !me.ride && me.mode === "walk" && (jackT = nearestCar())) { key = "jack:" + jackT.k + (jackT.c & 7); txt = jackLabel(jackT); }
   else if (TN.playing && !me.ride && me.mode !== "car") {
     const p = nearestPlace(me.x, me.y);
     if (p) { key = p.id; txt = `Entrer · ${p.t.name}`; }
@@ -927,7 +927,16 @@ function driveCar(ux, uy, dt) {
 const FATAL = 15;             // m/s (54 km/h): a hit on something hard above this, and the car blows up
 const KNOCK = 4;              // m/s: hitting someone on foot faster than this knocks them down
 // the player's cars: the inhabitants' models (live.js TRAFFIC, the variant byte of their cars), each with its handling
+// the services' vehicles, once taken (models 16..20): ambulance, police, fire engine, tow truck, street sweeper
+const SERVICE_CARS = [
+  { name: "ems_ambulance", L: 5.6, W: 1.95, vmax: 40, acc: 8, brake: 11, turn: 1.0, label: "ambulance", siren: true },
+  { name: "ems_police", L: 4.5, W: 1.8, vmax: 47, acc: 12, brake: 14, turn: 1.35, label: "voiture de police", siren: true },
+  { name: "ems_fire", L: 6.4, W: 2.2, vmax: 31, acc: 4.5, brake: 8, turn: 0.8, label: "camion de pompiers", siren: true },
+  { name: "tow", L: 6.6, W: 2.3, vmax: 30, acc: 5, brake: 9, turn: 0.85, label: "dépanneuse de la fourrière" },
+  { name: "sweeper", L: 5.2, W: 2.1, vmax: 16, acc: 3, brake: 8, turn: 1.0, label: "balayeuse" },
+];
 function carSpec(model) {
+  if (model >= 16 && model < 16 + SERVICE_CARS.length) return { model, service: model - 16, ...SERVICE_CARS[model - 16] };
   const T = live.TRAFFIC[model % live.TRAFFIC.length], n = T[0];
   const h = /truck/.test(n) ? { vmax: 24, acc: 3.8, brake: 7, turn: 0.75, label: "camion" }
     : /van/.test(n) ? { vmax: 29, acc: 5.5, brake: 9, turn: 0.95, label: "utilitaire" }
@@ -1024,22 +1033,28 @@ function knock(s) {
   shake(5);
   impact({ kind: "hit", id: s.id, x: me.x, y: me.y });
 }
-function nearestCar(r = 5.5) {
-  let best = null, bd = r;
+// something to take, next to you on foot: a car or a service vehicle (6 m), a bike (3 m)
+function nearestCar() {
+  let best = null, bd = Infinity;
   for (const [id, k, x, y, , , , c] of live.people) {
-    if (k !== 0) continue;
+    if (k !== 0 && k !== 2 && k !== 3) continue;
     const d = Math.hypot(x - me.x, y - me.y);
-    if (d < bd) { bd = d; best = { id, x, y, c }; }
+    if (d > (k === 2 ? 3 : 6)) continue;
+    if (d < bd) { bd = d; best = { id, k, x, y, c }; }
   }
   return best;
 }
+const jackLabel = (t) => t.k === 2 ? "Piquer le vélo" : t.k === 3 ? `Voler ${["l'ambulance", "la voiture de police", "le camion de pompiers", "la dépanneuse", "la balayeuse"][Math.min(4, t.c & 7)]}` : "Voler la voiture";
 async function carjack(car) {
   const j = await impact({ kind: "jack", id: car.id, x: me.x, y: me.y });
-  if (!j || j.model == null) return toast("Raté, la voiture est partie");
+  if (!j || j.model == null) return toast("Raté, il est parti");
   if (room) leave();
-  me.x = j.x; me.y = j.y; me.a = j.a; me.mode = "car"; me.v = 0;
-  me.car = carSpec(j.model);
-  toast(`Tu prends le volant (${me.car.label}) ! Le conducteur s'enfuit.`);
+  me.x = j.x; me.y = j.y; me.a = j.a; me.v = 0;
+  if (j.model === 255) { me.mode = "bike"; me.car = null; toast("Tu piques le vélo ! Son propriétaire s'enfuit en criant."); }
+  else {
+    me.mode = "car"; me.car = carSpec(j.model);
+    toast(me.car.service != null ? `Tu prends ${["l'ambulance", "la voiture de police", "le camion de pompiers", "la dépanneuse", "la balayeuse"][me.car.service]} !${me.car.siren ? " Gyrophare allumé." : ""}` : `Tu prends le volant (${me.car.label}) ! Le conducteur s'enfuit.`);
+  }
   hud();
 }
 
@@ -1152,8 +1167,11 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   const carM = /^car(\d+)$/.exec(mode || ""), spec = isMe ? me.car : carM ? carSpec(+carM[1]) : null;
   if (carM) mode = "car";
   const spr = mode === "car" ? (spec?.name || live.SPRITE_CARS[hsh % 8]) : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;
-  const lamps = mode === "car" ? live.vlamps(x, y, z, a, spec?.L ?? 4.2, (spec?.W ?? 1.8) - 0.1, 0.65) : mode === "bike" ? live.vlamps(x, y, z, a, 1.7, 0, 0.9, { noBeam: true }) : null;
+  const lamps = mode === "car" ? live.vlamps(x, y, z, a, spec?.L ?? 4.2, (spec?.W ?? 1.8) - 0.1, 0.65,
+      spec?.siren ? { siren: true, bar: spec.service === 2 ? 2.0 : spec.service === 1 ? -0.2 : 1.6, barZ: spec.service === 2 ? 2.95 : spec.service === 1 ? 1.5 : 2.7 } : {}) : mode === "bike" ? live.vlamps(x, y, z, a, 1.7, 0, 0.9, { noBeam: true }) : null;
   if (mode !== "heli") items.push({ sx, sy, h: 2 * K, lamps, draw: () => {
+    if (spec?.name === "tow") return live.towTruck(x, y, z, a, false, performance.now() / 1000);
+    if (spec?.name === "sweeper") return live.sweeper(x, y, z, a, performance.now() / 1000);
     if (live.sprite(spr, x, y, z, a, "p:" + name)) return;
     if (mode === "car") live.box(x, y, z + 0.2, a, 4.3, 1.8, 1.45, live.shade(col, 1.1), col, "rgba(20,24,28,.6)");
     else {

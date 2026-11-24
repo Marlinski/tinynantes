@@ -999,7 +999,7 @@ impl Sim {
         // cars: who is ahead of whom on each directed street segment
         let mut lanes: HashMap<(u32, u32), Vec<(f32, usize)>> = HashMap::new();
         for (k, a) in self.agents.iter().enumerate() {
-            if a.kind == Kind::Car && a.i + 1 < a.path.len() {
+            if matches!(a.kind, Kind::Car | Kind::Emergency) && a.i + 1 < a.path.len() {
                 lanes.entry((a.path[a.i], a.path[a.i + 1])).or_default().push((a.s, k));
             }
         }
@@ -1047,6 +1047,10 @@ impl Sim {
             if a.kind == Kind::Emergency {
                 // they don't queue: the traffic makes way (siren) or they are simply let through
                 let limit = if a.siren { g.edge_vmax(na, nb) * 1.4 } else { g.edge_vmax(na, nb) }.min(a.vpref);
+                // never into the vehicle ahead: with the siren they get by closer (traffic pulls over)
+                let gap = gaps[k];
+                let keep = if a.siren { 5.5 } else { 7.0 };
+                let limit = if gap < keep { 0.0 } else if gap < 30.0 { limit.min((gap - keep) * 0.7 + 1.0) } else { limit };
                 let acc = if limit > a.v { 3.0 } else { 5.0 };
                 a.v += (limit - a.v).clamp(-acc * dt, acc * dt);
             }
@@ -1267,6 +1271,36 @@ impl Sim {
                     a.i = n - 2;
                     a.s = ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
                 }
+                // its own parking place along the street, around the scene: never on top of another vehicle
+                // or of the wreck (slots behind and ahead of it, alternately, 8 m apart)
+                let id = a.id;
+                let end = *a.path.last().unwrap();
+                let face = a.face;
+                let scene = self.agents.iter().find(|w| w.id == target).map(|w| {
+                    let q = self.g.xyz[w.path[0] as usize];
+                    [q[0] + w.jit[0], q[1] + w.jit[1]]
+                });
+                let taken: Vec<[f32; 2]> = self.agents.iter()
+                    .filter(|o| o.id != id && o.kind == Kind::Emergency && o.job.is_some_and(|j| j.1 == 1))
+                    .map(|o| { let q = self.position(o); [q[0] + o.jit[0], q[1] + o.jit[1]] })
+                    .collect();
+                let q = self.g.xyz[end as usize];
+                let (dx, dy) = (face.cos(), face.sin());
+                // where the scene is along the street (projected), else the street's end
+                let along0 = scene.map(|w| (w[0] - q[0]) * dx + (w[1] - q[1]) * dy).unwrap_or(0.0).clamp(-40.0, 40.0);
+                let mut jit = [dx * (along0 - 8.0), dy * (along0 - 8.0)];
+                for k in 0..12 {
+                    let off = along0 + if k % 2 == 0 { -8.0 } else { 8.0 } * (1 + k / 2) as f32;
+                    // drawn at the end node + right-hand offset (1.7 m) + jit
+                    let c = [q[0] + dy * 1.7 + dx * off, q[1] - dx * 1.7 + dy * off];
+                    let free = taken.iter().all(|t| (t[0] - c[0]).powi(2) + (t[1] - c[1]).powi(2) > 6.5f32.powi(2))
+                        && scene.is_none_or(|w| (w[0] - c[0]).powi(2) + (w[1] - c[1]).powi(2) > 5.5f32.powi(2));
+                    if free {
+                        jit = [dx * off, dy * off];
+                        break;
+                    }
+                }
+                self.agents[k].jit = jit;
             }
             1 => {
                 // the job: the tow truck lifts the wreck, the ambulance takes the injured, the cleaners clean
@@ -1294,6 +1328,7 @@ impl Sim {
                         a.i = 0;
                         a.s = 0.0;
                         a.siren = false;
+                        a.jit = [0.0; 2];
                         a.v = 4.0;
                         a.vpref = 10.0;
                         a.job = Some((target, 2));
@@ -1376,7 +1411,9 @@ impl Sim {
                 }
             }
         }
-        out.extend(self.place_static(Kind::Wreck, x, y, heading, model & 0x4f, now)); // 64: a helicopter
+        // 64: a helicopter; 16..: a service vehicle the player had taken (its wreck is drawn as the van)
+        let m = if model & 64 != 0 { 64 } else if model >= 16 { 9 } else { model & 15 };
+        out.extend(self.place_static(Kind::Wreck, x, y, heading, m, now));
         self.place_static(Kind::Mark, x, y, 0.0, 0, now);
         self.save_marks();
         for s in [1, 0, 2] {
@@ -1402,7 +1439,8 @@ impl Sim {
         }
         let seed = self.agents.iter().find(|a| a.id == id).map(|a| a.seed).unwrap_or(0);
         self.agents.retain(|a| a.id != id);
-        let w = self.place_static(Kind::Wreck, p[0], p[1], h, 16 + (seed % 8) as u8, now)?;
+        // the same clothes as when they were walking (the viewer's walker sprite is variant % 8)
+        let w = self.place_static(Kind::Wreck, p[0], p[1], h, 16 + ((seed >> 8) as u8 % 8), now)?;
         if let Some(a) = self.agents.iter_mut().find(|a| a.id == w) {
             a.seed = seed;
         }
@@ -1420,12 +1458,17 @@ impl Sim {
         Some([p[0], p[1]])
     }
 
-    /// A player takes a sim car: the driver gets out and runs; returns the car's variant byte, position and heading.
+    /// A player takes an inhabitant's car, service vehicle (ambulance, police, fire engine, tow truck, sweeper)
+    /// or bike: the driver gets out and runs. Returns the player's model (car variant, 16 + service, or 255 for a
+    /// bike), position and heading.
     pub fn carjack(&mut self, id: u32, now: f64) -> Option<(u8, [f32; 3], f32)> {
         let (p, h, kind, v) = self.where_is(id)?;
-        if kind != Kind::Car {
-            return None;
-        }
+        let model = match kind {
+            Kind::Car => v % 16,
+            Kind::Emergency => 16 + (v & 7).min(4),
+            Kind::Bike => 255,
+            _ => return None,
+        };
         self.agents.retain(|a| a.id != id);
         // the driver, out of the car and off as fast as they can
         if let Some(from) = self.g.nearest(p[0], p[1], WALK, 40.0) {
@@ -1442,8 +1485,8 @@ impl Sim {
             }
         }
         self.scare(p[0], p[1], 25.0, now + 15.0);
-        crate::metrics::inc("tn_carjacks_total", &[], 1.0);
-        Some((v, p, h))
+        crate::metrics::inc("tn_carjacks_total", &[("what", match kind { Kind::Car => "car", Kind::Bike => "bike", _ => "service" })], 1.0);
+        Some((model, p, h))
     }
 
     /// Everyone on foot or on a bike within `r` of (x, y) runs away until `until`.
