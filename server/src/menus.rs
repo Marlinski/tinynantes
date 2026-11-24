@@ -132,6 +132,52 @@ fn glob(pat: &str, s: &str) -> bool {
     !anchored || pos == s.len() || (parts.len() > 1 && parts.last() == Some(&"") )
 }
 
+// ---------------------------------------------------------------- public internet only
+// Place websites come from OSM: never let one point the server at the cluster's own network (SSRF). Names are
+// resolved through PublicOnly (every request, redirects included); IP literals are checked before and on redirect.
+
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            !(v.is_private() || v.is_loopback() || v.is_link_local() || v.is_unspecified() || v.is_broadcast()
+                || v.is_documentation() || o[0] == 0 || (o[0] == 100 && (o[1] & 0xc0) == 64) || o[0] >= 224)
+        }
+        IpAddr::V6(v) => {
+            if let Some(m) = v.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(m));
+            }
+            let s = v.segments();
+            !(v.is_loopback() || v.is_unspecified() || (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80 || v.is_multicast())
+        }
+    }
+}
+
+fn literal_private(u: &Url) -> bool {
+    match u.host() {
+        Some(url::Host::Ipv4(v)) => !public_ip(v.into()),
+        Some(url::Host::Ipv6(v)) => !public_ip(v.into()),
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost") || d.ends_with(".local") || d.ends_with(".internal")
+            || d.ends_with(".svc") || d.contains(".svc.") || !d.contains('.'),
+        None => true,
+    }
+}
+
+struct PublicOnly;
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((name.as_str(), 0)).await?
+                .filter(|a| public_ip(a.ip())).collect();
+            if addrs.is_empty() {
+                return Err("no public address".into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 pub struct Page {
     pub url: Url,
     pub ctype: String,
@@ -148,7 +194,17 @@ pub struct Fetcher {
 impl Fetcher {
     pub fn new() -> Result<Fetcher> {
         let http = reqwest::Client::builder().user_agent(UA).timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(6)).build()?;
+            .dns_resolver(Arc::new(PublicOnly))
+            .redirect(reqwest::redirect::Policy::custom(|a| {
+                if a.previous().len() >= 6 {
+                    a.error("too many redirects")
+                } else if literal_private(a.url()) {
+                    a.stop()
+                } else {
+                    a.follow()
+                }
+            }))
+            .build()?;
         Ok(Fetcher { http, robots: Default::default(), next_slot: Default::default(), inflight: Default::default() })
     }
 
@@ -195,6 +251,9 @@ impl Fetcher {
         let u = Url::parse(url)?;
         if !matches!(u.scheme(), "http" | "https") {
             return Err(anyhow!("scheme"));
+        }
+        if literal_private(&u) {
+            return Err(anyhow!("private address"));
         }
         let path = match u.query() {
             Some(q) => format!("{}?{q}", u.path()),
@@ -686,6 +745,16 @@ mod tests {
         let s = from_lines(&ls(&["Galette complète 9,50 €", "Crêpe beurre sucre 4 €", "Cidre brut 4,5 €", "Café 2 €", "Livraison 3 €"]));
         assert_eq!(count(&s), 4);
         assert_eq!(s[0].items[0].name, "Galette complète");
+    }
+
+    #[test]
+    fn private_addresses() {
+        for u in ["http://127.0.0.1/", "http://10.0.0.5/menu", "http://192.168.1.1/", "http://169.254.169.254/latest",
+                  "http://[::1]/", "http://[fd00::1]/", "http://localhost:8080/", "http://kubernetes.default.svc/", "http://minix/"] {
+            assert!(literal_private(&Url::parse(u).unwrap()), "{u}");
+        }
+        assert!(!literal_private(&Url::parse("https://www.mrmachin.com/").unwrap()));
+        assert!(!literal_private(&Url::parse("http://93.184.216.34/").unwrap()));
     }
 
     #[test]
