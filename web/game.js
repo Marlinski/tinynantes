@@ -833,16 +833,26 @@ function moveBy(dx, dy) {
   if (walkable(m, me.x, me.y + dy)) { me.y += dy; return true; }
   return false;
 }
-// GTA-style: up/down = throttle/brake-reverse, left/right = steer
+// Like walking: the stick / arrows give the direction to go on screen (not throttle + steer relative to the car).
+// The car turns toward it like a car does: a limited turning rate (it can't spin on the spot), slower through
+// sharp turns; a target behind it at low speed = back up while swinging the nose round, then forward (a three-point
+// turn). No input: it rolls to
+// a stop.
 function driveCar(ux, uy, dt) {
-  const throttle = -uy, steer = -ux;
-  if (throttle > 0) me.v += (me.v < 0 ? 12 : 6.5) * throttle * dt;
-  else if (throttle < 0) me.v += (me.v > 0 ? 12 : 4) * throttle * dt;
-  else me.v -= Math.sign(me.v) * Math.min(Math.abs(me.v), 1.2 * dt);
-  // off the carriageway (pavement, square, park): walking pace-ish; probe a little ahead so 1-cell gaps don't brake
+  const mag = Math.min(1, Math.hypot(ux, uy));
   const ahead = onRoad(me.x, me.y) || onRoad(me.x + Math.cos(me.a) * 2, me.y + Math.sin(me.a) * 2);
-  me.v = Math.max(-4, Math.min(ahead ? SPEED.car : 5, me.v));
-  me.a += steer * dt * 1.3 * Math.min(1, Math.abs(me.v) / 4) * Math.sign(me.v || 1);
+  const vmax = ahead ? SPEED.car : 5;            // off the carriageway (pavement, square, park): walking pace-ish
+  if (mag > 0.05) {
+    const [wx, wy] = screenToWorldDir(ux, uy);
+    let da = Math.atan2(wy, wx) - me.a; da = Math.atan2(Math.sin(da), Math.cos(da));
+    const back = Math.abs(da) > 2.3 && me.v < 3;   // wants to go the other way and is nearly stopped: back up
+    const want = back ? -4 * mag : vmax * mag * Math.max(0.25, Math.cos(Math.min(Math.abs(da), 1.4)));
+    me.v += Math.sign(want - me.v) * Math.min(Math.abs(want - me.v), (want > me.v ? 7 : 12) * dt);
+    // turning rate: needs some speed to turn, tighter when slow; reversing turns the nose the other way
+    const turn = 2.4 * Math.min(1, Math.abs(me.v) / 3) * dt;
+    me.a += Math.sign(da) * Math.min(Math.abs(da), turn);     // backing up swings the nose round too
+  } else me.v -= Math.sign(me.v) * Math.min(Math.abs(me.v), 5 * dt);
+  me.v = Math.max(-4, Math.min(vmax, me.v));
   const dx = Math.cos(me.a) * me.v * dt, dy = Math.sin(me.a) * me.v * dt;
   if (walkable("car", me.x, me.y) && !walkable("car", me.x + dx, me.y + dy)) { me.v *= -0.25; return; }  // bump
   me.x += dx; me.y += dy;
