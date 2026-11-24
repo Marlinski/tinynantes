@@ -593,6 +593,33 @@ def rooms():
     print(f"rooms: {len(out)} of {len(pois)} places", flush=True)
 
 
+def bases():
+    """web/data/world/bases.json: where emergency vehicles come from and go to (OSM via Overpass): police
+    stations, hospitals (with an emergency department or not) and fire stations in the mapped areas."""
+    x0, y0, x1, y1 = geo.AREA
+    (lo0, la0), (lo1, la1) = _to_wgs.transform(x0, y0), _to_wgs.transform(x1, y1)
+    q = (f"[out:json][timeout:90];(nwr[amenity~\"^(police|hospital|fire_station)$\"]"
+         f"({la0},{lo0},{la1},{lo1}););out center tags;")
+    r = requests.post("https://overpass-api.de/api/interpreter", data={"data": q}, timeout=120,
+                      headers={"User-Agent": "tinynantes-build"})
+    r.raise_for_status()
+    T = Terrain()
+    ox, oy = geo.ORIGIN
+    out = []
+    for e in r.json()["elements"]:
+        c = e.get("center", e)
+        x, y = _to_l93.transform(c["lon"], c["lat"])
+        if not geo.inside(x, y):
+            continue
+        t = e.get("tags", {})
+        k = {"police": "police", "hospital": "hospital", "fire_station": "fire"}[t["amenity"]]
+        out.append({"k": k, "name": t.get("name", ""), "er": t.get("emergency") == "yes",
+                    "p": [round(x - ox, 1), round(y - oy, 1), round(float(T.z([[x, y]])[0]), 1)]})
+    (WEB / "bases.json").write_text(json.dumps(out, ensure_ascii=False))
+    counts = {k: sum(b["k"] == k for b in out) for k in ("police", "hospital", "fire")}
+    print(f"bases: {len(out)} {counts}")
+
+
 def main(argv):
     what = argv[0] if argv else "all"
     if what in ("osm", "all"):
@@ -607,6 +634,8 @@ def main(argv):
         rail_routes()
     if what in ("rooms", "all"):
         rooms()
+    if what in ("bases", "all"):
+        bases()
 
 
 if __name__ == "__main__":

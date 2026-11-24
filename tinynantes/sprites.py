@@ -318,6 +318,83 @@ def rail_car(livery, head=False, L=25.0):
     return m
 
 
+def _lightbar(m, x, z, w=1.2):
+    """Roof light bar: two blue domes on a dark base."""
+    m.box(x - 0.25, x + 0.25, -w / 2, w / 2, z, z + 0.08, DARK)
+    for yy in (-w / 2 + 0.05, 0.05):
+        m.box(x - 0.2, x + 0.2, yy, yy + w / 2 - 0.1, z + 0.08, z + 0.24, (0.15, 0.35, 0.95))
+
+
+def van_body(body, band=None, band2=None, L=5.6, H=2.55, W=1.95):
+    """A tall panel van (ambulance, fire VSAV, delivery): cab with windscreen, box body."""
+    m = Model()
+    h0 = 0.3
+    m.box(-L / 2, L / 2 - 0.9, -W / 2, W / 2, h0, H, body, front=body, back=body)
+    m.box(L / 2 - 0.9, L / 2, -W / 2 + 0.03, W / 2 - 0.03, h0, h0 + 0.85, body, front=body)
+    m.box(L / 2 - 0.9, L / 2 - 0.15, -W / 2 + 0.06, W / 2 - 0.06, h0 + 0.85, H - 0.35, body, GLASS, front=GLASS, taper=0.3)
+    if band:
+        m.box(-L / 2 - 0.01, L / 2 - 0.9, -W / 2 - 0.01, W / 2 + 0.01, h0 + 0.55, h0 + 0.85, band)
+    if band2:
+        m.box(-L / 2 - 0.01, L / 2 - 0.9, -W / 2 - 0.01, W / 2 + 0.01, h0 + 1.05, h0 + 1.2, band2)
+    for yy in (-W / 2 + 0.2, W / 2 - 0.35):
+        m.box(L / 2, L / 2 + 0.03, yy, yy + 0.15, h0 + 0.42, h0 + 0.55, LIGHT)
+        m.box(-L / 2 - 0.03, -L / 2, yy, yy + 0.15, h0 + 0.42, h0 + 0.65, RED)
+    for xx in (-L / 2 + 0.9, L / 2 - 1.0):
+        for yy in (-W / 2 + 0.05, W / 2 - 0.05):
+            m.wheel(xx, yy, r=0.36)
+    return m
+
+
+def ambulance():
+    m = van_body((0.96, 0.96, 0.94), band=(0.98, 0.55, 0.1), band2=(0.15, 0.35, 0.8))
+    _lightbar(m, 1.6, 2.55)
+    _lightbar(m, -2.4, 2.55, w=0.8)
+    return m
+
+
+def fire_engine():
+    m = van_body((0.78, 0.1, 0.08), band=(0.95, 0.95, 0.92), L=6.4, H=2.8, W=2.2)
+    m.box(-3.0, 1.6, -0.9, 0.9, 2.8, 2.95, (0.7, 0.72, 0.74))          # ladder rack
+    _lightbar(m, 2.0, 2.8)
+    return m
+
+
+def police_car():
+    m = car((0.95, 0.95, 0.95), "sedan")
+    m.box(-2.26, 2.26, -0.9, 0.9, 0.28 + 0.3, 0.28 + 0.48, (0.12, 0.2, 0.55))   # blue band
+    m.box(-2.27, 2.27, -0.91, 0.91, 0.28 + 0.48, 0.28 + 0.54, (0.8, 0.12, 0.12)) # red pinstripe
+    _lightbar(m, -0.2, 0.28 + 0.62 + 0.55)
+    return m
+
+
+def samu_car():
+    m = car((0.96, 0.96, 0.94), "suv")
+    m.box(-2.26, 2.26, -0.9, 0.9, 0.28 + 0.3, 0.28 + 0.5, (0.98, 0.55, 0.1))
+    _lightbar(m, -0.2, 0.28 + 0.62 + 0.68)
+    return m
+
+
+def box_truck():
+    m = Model()
+    W, h0 = 2.3, 0.4
+    m.box(-4.0, 2.0, -W / 2, W / 2, h0 + 0.3, 3.4, (0.93, 0.93, 0.9), front=(0.85, 0.85, 0.82), back=(0.8, 0.8, 0.78))
+    m.box(2.0, 3.6, -W / 2 + 0.05, W / 2 - 0.05, h0, h0 + 1.1, (0.2, 0.36, 0.62), front=(0.2, 0.36, 0.62))
+    m.box(2.1, 3.4, -W / 2 + 0.1, W / 2 - 0.1, h0 + 1.1, 2.7, (0.2, 0.36, 0.62), GLASS, front=GLASS, taper=0.15)
+    for yy in (-W / 2 + 0.2, W / 2 - 0.35):
+        m.box(3.6, 3.63, yy, yy + 0.15, h0 + 0.5, h0 + 0.65, LIGHT)
+        m.box(-4.03, -4.0, yy, yy + 0.15, h0 + 0.5, h0 + 0.75, RED)
+    for xx in (-3.0, -1.9, 2.6):
+        for yy in (-W / 2 + 0.05, W / 2 - 0.05):
+            m.wheel(xx, yy, r=0.45, w=0.3)
+    return m
+
+
+def taxi():
+    m = car((0.12, 0.13, 0.15), "sedan")
+    m.box(-0.35, 0.35, -0.3, 0.3, 0.28 + 0.62 + 0.55, 0.28 + 0.62 + 0.75, (1.0, 0.95, 0.75))   # roof sign
+    return m
+
+
 LIVERY_TGV = ((0.93, 0.92, 0.93), (0.45, 0.15, 0.4), (0.82, 0.82, 0.84))
 LIVERY_TER = ((0.94, 0.94, 0.92), (0.12, 0.42, 0.7), (0.78, 0.8, 0.82))
 
@@ -349,6 +426,15 @@ def catalogue():
     out.append(("train_tgv_head", rail_car(LIVERY_TGV, head=True), 7.5))
     out.append(("train_tgv", rail_car(LIVERY_TGV), 7.5))
     out.append(("train_ter", rail_car(LIVERY_TER), 7.5))
+    # more traffic and the emergency services (sheets after the big things: numbering of older sheets kept)
+    out.append(("ems_ambulance", ambulance(), 11.0))
+    out.append(("ems_police", police_car(), 12.0))
+    out.append(("ems_fire", fire_engine(), 10.0))
+    out.append(("ems_samu", samu_car(), 12.0))
+    out.append(("van_delivery", van_body((0.95, 0.95, 0.93)), 11.0))
+    out.append(("truck_box", box_truck(), 9.0))
+    out.append(("car_taxi", taxi(), 12.0))
+    out.append(("car_teal_hatch", car((0.2, 0.55, 0.55), "hatch"), 12.0))
     return out
 
 
@@ -449,6 +535,10 @@ PROMPT_PLANE = ("Repaint these 3D renders of an airliner as crisp isometric pixe
                 "same style as a pixel-art city map. Keep every aeroplane exactly where it is, with the same shape, size, "
                 "direction and colours. There are no people anywhere: draw only the aeroplanes. Keep the plain empty grey "
                 "background. Do not add or remove anything.")
+PROMPT_FLEET = ("Repaint these 3D renders of cars, vans, trucks and emergency vehicles as crisp isometric pixel-art "
+                "sprites with dark outlines, in the same style as a pixel-art city map. Keep every vehicle exactly where "
+                "it is, with the same shape, size, direction, colours, stripes and roof lights. There are no people "
+                "anywhere: draw only the vehicles. Keep the plain empty grey background. Do not add or remove anything.")
 PROMPT_TRAIN = ("Repaint these 3D renders of a French train car as crisp isometric pixel-art sprites with dark outlines, in "
                 "the same style as a pixel-art city map. Keep every car exactly where it is, with the same shape, size, "
                 "direction and colours, windows along the sides. There are no people anywhere: draw only the train cars. "
@@ -473,6 +563,15 @@ def cut(painted, mask, render):
     return Image.fromarray(np.dstack([rgb.astype("u1"), a]), "RGBA")
 
 
+def prompt_for(name):
+    """The painting prompt of the sheet whose first sprite is `name`."""
+    for prefix, pr in (("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
+                       ("van_delivery", PROMPT_FLEET), ("walker", PROMPT_WALKERS), ("bike", PROMPT_BIKES)):
+        if name.startswith(prefix):
+            return pr
+    return PROMPT
+
+
 def main(argv):
     h = int(argv[0]) if argv else 0
     what = argv[1] if len(argv) > 1 else "all"
@@ -481,7 +580,8 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    vehicles = [it for it in items if not it[0].startswith(("walker", "bike", "heli", "plane", "train"))]
+    LATER = ("walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal")
+    vehicles = [it for it in items if not it[0].startswith(LATER)]
     people = [it for it in items if it[0].startswith(("walker", "bike"))]
     aircraft = [it for it in items if it[0].startswith("heli")]
     big = [it for it in items if it[0].startswith(("plane", "train"))]
@@ -490,6 +590,8 @@ def main(argv):
     batches += [(people[s:s + 16], 64) for s in range(0, len(people), 16)]
     batches += [(aircraft[s:s + 4], CELL) for s in range(0, len(aircraft), 4)]
     batches += [([it], 256) for it in big]
+    fleet = [it for it in items if it[0].startswith(("ems_", "van_delivery", "truck_", "car_taxi", "car_teal"))]
+    batches += [(fleet[s:s + 4], CELL) for s in range(0, len(fleet), 4)]
     atlas = {"dirs": DIRS, "sheets": []}
     for k, (batch, cell) in enumerate(batches):
         img, mask, entries = render_sheet(batch, view, cell)
@@ -497,10 +599,9 @@ def main(argv):
         pfile = work / f"paint_{k}.png"
         if what in ("paint", "all") or pfile.exists():
             if not pfile.exists():
-                pr = (PROMPT_HELI if batch[0][0].startswith("heli") else PROMPT_PLANE if batch[0][0].startswith("plane")
-                      else PROMPT_TRAIN if batch[0][0].startswith("train") else PROMPT if cell == CELL else PROMPT_BIKES) if batch[0][0].startswith("bike") else PROMPT_WALKERS
+                pr = prompt_for(batch[0][0])
                 # seeds picked by eye: 3 gave the cleanest helicopters, 7 planes and trains without stray people
-                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN) else 1
+                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET) else 1
                 paint(img, prompt=pr, seed=seed).save(pfile)
             sprite = cut(Image.open(pfile), mask, img)
         else:

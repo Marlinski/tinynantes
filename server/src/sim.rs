@@ -247,7 +247,28 @@ pub enum Kind {
     Car = 0,
     Walker = 1,
     Bike = 2,
+    /// ambulance, police or fire engine; its variant byte = service (0 ambulance, 1 police, 2 fire) + 4 × siren
+    Emergency = 3,
 }
+
+/// Where emergency vehicles start from and return to (web/data/world/bases.json).
+#[derive(Deserialize, Clone)]
+pub struct BaseIn {
+    pub k: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub er: bool,
+    pub p: [f32; 3],
+}
+struct Base {
+    service: u8,
+    node: u32,
+    name: String,
+    /// relative chance of being picked (hospitals with an emergency department take most ambulances)
+    weight: f32,
+}
+const MAX_EMERGENCY: usize = 8;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Plan {
@@ -272,6 +293,10 @@ struct Agent {
     sec_speed: f32,
     poi: Option<usize>,
     plan: Plan,
+    /// emergency vehicles: service (0 ambulance, 1 police, 2 fire), siren on, the base it is tied to
+    service: u8,
+    siren: bool,
+    base: Option<usize>,
 }
 
 /// What clients get for one inhabitant: [id, kind, x, y, z, heading, speed, colour/variant]
@@ -292,6 +317,7 @@ pub struct Sim {
     target_per_section: Vec<f32>,
     sections: Vec<SectionIn>,
     rain: f32,
+    bases: Vec<Base>,
 }
 
 const FIRST_NAMES: &[&str] = &[
@@ -331,8 +357,17 @@ fn open(k: &str, hour: u32, sunday: bool) -> bool {
 }
 
 impl Sim {
-    pub fn new(g: Arc<Graph>, pois: Vec<PoiIn>, stations: &[[f32; 3]]) -> Sim {
+    pub fn new(g: Arc<Graph>, pois: Vec<PoiIn>, stations: &[[f32; 3]], bases: &[BaseIn]) -> Sim {
         let stops = stations.iter().filter_map(|p| g.nearest(p[0], p[1], WALK, 80.0)).collect();
+        let bases = bases
+            .iter()
+            .filter_map(|b| {
+                let service = match b.k.as_str() { "hospital" => 0, "police" => 1, "fire" => 2, _ => return None };
+                let node = g.nearest(b.p[0], b.p[1], DRIVE, 150.0)?;
+                let weight = match (service, b.er) { (0, true) => 6.0, (0, false) => 0.6, (1, _) => 1.0, _ => 1.5 };
+                Some(Base { service, node, name: b.name.clone(), weight })
+            })
+            .collect();
         Sim {
             g,
             pois: pois.into_iter().filter(|p| p.t.contains_key("name")).collect(),
@@ -343,6 +378,7 @@ impl Sim {
             target_per_section: vec![],
             sections: vec![],
             rain: 0.0,
+            bases,
         }
     }
 
@@ -383,6 +419,9 @@ impl Sim {
             sec_speed: 0.0,
             poi: None,
             plan: Plan::Going,
+            service: 0,
+            siren: false,
+            base: None,
         });
         self.agents.last_mut().unwrap()
     }
@@ -437,6 +476,37 @@ impl Sim {
             ag.i = start;
             have[k] += 1.0;
         }
+    }
+
+    /// Now and then an ambulance, a police car or a fire engine: called out from its base with the siren on, or
+    /// back to it quietly; ambulances also bring patients in to the emergency departments, siren on.
+    fn spawn_emergency(&mut self) {
+        if self.bases.is_empty() || self.agents.iter().filter(|a| a.kind == Kind::Emergency).count() >= MAX_EMERGENCY {
+            return;
+        }
+        if self.rng.gen::<f32>() > 0.12 {
+            return; // about one every 8 s while below the cap
+        }
+        let total: f32 = self.bases.iter().map(|b| b.weight).sum();
+        let mut r = self.rng.gen::<f32>() * total;
+        let k = self.bases.iter().position(|b| { r -= b.weight; r <= 0.0 }).unwrap_or(0);
+        let (service, home) = (self.bases[k].service, self.bases[k].node);
+        let hp = self.g.xyz[home as usize];
+        let Some(far) = self.random_node_near(hp[0], hp[1], 2500.0, DRIVE) else { return };
+        // ambulances: half bring someone in (siren, towards the hospital); otherwise everyone leaves on a call
+        // (siren) or comes home after one (quiet)
+        let roll = self.rng.gen::<f32>();
+        let (from, to, siren) = if service == 0 && roll < 0.5 { (far, home, true) } else if roll < 0.75 { (home, far, true) } else { (far, home, false) };
+        let Some(path) = self.g.route(from, to, DRIVE, 8000) else { return };
+        if path.len() < 3 {
+            return;
+        }
+        let v = if siren { 15.0 } else { 9.0 };
+        let ag = self.spawn(Kind::Emergency, path, v);
+        ag.v = v * 0.7;
+        ag.service = service;
+        ag.siren = siren;
+        ag.base = Some(k);
     }
 
     fn choose_poi(&mut self, x: f32, y: f32, hour: u32, sunday: bool) -> Option<usize> {
@@ -542,6 +612,12 @@ impl Sim {
                 continue;
             }
             let (na, nb) = (a.path[a.i], a.path[a.i + 1]);
+            if a.kind == Kind::Emergency {
+                // they don't queue: the traffic makes way (siren) or they are simply let through
+                let limit = if a.siren { g.edge_vmax(na, nb) * 1.4 } else { g.edge_vmax(na, nb) }.min(a.vpref);
+                let acc = if limit > a.v { 3.0 } else { 5.0 };
+                a.v += (limit - a.v).clamp(-acc * dt, acc * dt);
+            }
             if a.kind == Kind::Car {
                 let limit = if a.section.is_some() && a.i < a.sec_until { a.sec_speed } else { g.edge_vmax(na, nb).min(a.vpref.max(8.0)) };
                 let gap = gaps[k];
@@ -571,7 +647,7 @@ impl Sim {
             let hour_rng: f64 = self.rng.gen_range(300.0..2400.0);
             let a = &mut self.agents[k];
             match (a.kind, a.plan) {
-                (Kind::Car, _) => done.push(k),
+                (Kind::Car, _) | (Kind::Emergency, _) => done.push(k),
                 (_, Plan::Going) if a.poi.is_some() => a.plan = Plan::Inside { until: now + hour_rng },
                 (_, Plan::Inside { .. }) => {
                     // walk to the nearest stop (walkers) or ride away and vanish
@@ -612,6 +688,7 @@ impl Sim {
         let t = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris);
         let wd = t.weekday().num_days_from_monday();
         self.spawn_cars();
+        self.spawn_emergency();
         self.spawn_people(t.hour(), wd >= 5, wd == 6);
     }
 
@@ -627,11 +704,16 @@ impl Sim {
                 let f = (a.s / len).min(1.0);
                 let (dx, dy) = ((pb[0] - pa[0]) / len, (pb[1] - pa[1]) / len);
                 // cars keep right of the centre line, people walk on the pavement
-                let side = match a.kind { Kind::Car => 1.7, Kind::Walker => 4.5 + (a.seed % 3) as f32 * 0.6, Kind::Bike => 2.6 };
+                let side = match a.kind {
+                    Kind::Car | Kind::Emergency => 1.7,
+                    Kind::Walker => 4.5 + (a.seed % 3) as f32 * 0.6,
+                    Kind::Bike => 2.6,
+                };
                 let x = pa[0] + (pb[0] - pa[0]) * f + dy * side;
                 let y = pa[1] + (pb[1] - pa[1]) * f - dx * side;
                 let z = pa[2] + (pb[2] - pa[2]) * f;
-                (a.id, a.kind as u8, x, y, z, dy.atan2(dx), a.v, (a.seed >> 8) as u8)
+                let variant = if a.kind == Kind::Emergency { a.service + 4 * a.siren as u8 } else { (a.seed >> 8) as u8 };
+                (a.id, a.kind as u8, x, y, z, dy.atan2(dx), a.v, variant)
             })
             .collect();
         Snapshot { at: now, items }
@@ -641,13 +723,26 @@ impl Sim {
         let a = self.agents.iter().find(|a| a.id == id)?;
         let poi = a.poi.and_then(|k| self.pois.get(k));
         let place = poi.and_then(|p| p.t.get("name")).cloned();
+        let base = a.base.and_then(|k| self.bases.get(k));
         let what = match (a.kind, a.plan) {
             (Kind::Car, _) => "roule".to_string(),
+            (Kind::Emergency, _) => {
+                let at = base.map(|b| b.name.as_str()).filter(|n| !n.is_empty());
+                match (a.service, a.siren, at) {
+                    (0, true, Some(n)) if a.path.last() == base.map(|b| &b.node) => format!("urgence vers {n}"),
+                    (_, true, _) => "en intervention".to_string(),
+                    (_, false, Some(n)) => format!("rentre à {n}"),
+                    _ => "rentre".to_string(),
+                }
+            }
             (_, Plan::Going) => place.as_ref().map(|n| format!("se rend à {n}")).unwrap_or_else(|| "se promène".into()),
             (_, Plan::Inside { .. }) => place.as_ref().map(|n| format!("est à {n}")).unwrap_or_default(),
             (_, Plan::Leaving) => "rentre".to_string(),
         };
-        let kind = ["car", "walker", "bike"][a.kind as usize];
+        let kind = match a.kind {
+            Kind::Emergency => ["ambulance", "police", "pompiers"][a.service as usize % 3],
+            k => ["car", "walker", "bike"][k as usize],
+        };
         Some(serde_json::json!({
             "id": a.id, "kind": kind, "name": name_of(a.seed),
             "doing": what, "place": poi.map(|p| &p.id), "speed": a.v,
@@ -706,5 +801,10 @@ pub fn build(web: &Path) -> Result<Sim> {
     }
     let t: Transit = serde_json::from_slice(&std::fs::read(web.join("data/world/transit.json"))?)?;
     let st: Vec<[f32; 3]> = t.stations.iter().map(|s| s.p).collect();
-    Ok(Sim::new(g, pois, &st))
+    // optional: older world data has no bases
+    let bases: Vec<BaseIn> = std::fs::read(web.join("data/world/bases.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    Ok(Sim::new(g, pois, &st, &bases))
 }

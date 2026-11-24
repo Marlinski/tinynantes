@@ -172,3 +172,10 @@ body.playing .mini, body.playing .search { display: none; }
   color: var(--accent-ink); font: inherit; text-align: center; }
 .altbtns { position: fixed; right: 84px; bottom: 120px; display: flex; flex-direction: column; gap: 8px; }
 .altbtns button { width: 52px; height: 52px; border-radius: 50%; border: 0; background: rgb(20 24 30 / .8); color: #fff; font-size: 20px; }
+
+/* debug panel: time of day and weather overrides (F9) */
+.dbg { position: fixed; left: 16px; top: 110px; z-index: 50; background: rgba(20,24,28,.92); color: #e8eaed; padding: 10px 12px;
+  border-radius: 10px; font: 12px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; gap: 6px; width: 260px; }
+.dbg .x { position: absolute; right: 6px; top: 4px; background: none; border: 0; color: inherit; font-size: 16px; cursor: pointer; }
+.dbg input[type=range] { width: 150px; vertical-align: middle; }
+.dbg small { color: #9aa3ad; }

@@ -55,8 +55,9 @@ live.open = async (kind, d) => {
     let a = null;
     try { a = await getJSON(`api/agent/${d.id}`); } catch { /* gone */ }
     if (!a) return;
-    const icon = { car: "🚗", walker: "🚶", bike: "🚲" }[a.kind];
-    openSide(`<p class="kicker">${icon} Habitant·e</p><h2>${esc(a.name)}</h2><p>${esc(a.doing)}</p>
+    const icon = { car: "🚗", walker: "🚶", bike: "🚲", ambulance: "🚑", police: "🚓", pompiers: "🚒" }[a.kind];
+    const who = { ambulance: "Ambulance", police: "Police", pompiers: "Pompiers" }[a.kind] || "Habitant·e";
+    openSide(`<p class="kicker">${icon} ${who}</p><h2>${esc(a.name)}</h2><p>${esc(a.doing)}</p>
       ${a.place ? `<p><a href="#" id="agentPlace">Voir le lieu</a></p>` : ""}
       <p class="src">Simulé par le serveur : la circulation suit les comptages réels, les passants vont vers des lieux ouverts à cette heure.</p>`);
     const pl = a.place && live.world.pois.find((p) => p.id === a.place);
@@ -168,7 +169,7 @@ function tabs() {
     sideBody.querySelectorAll("[data-p]").forEach((p) => (p.hidden = p.dataset.p !== b.dataset.t));
   }));
 }
-$("airportBtn").onclick = () => live.open("airport");
+// (the airport board opens from its pin on the map; no toolbar button)
 
 // ---------------------------------------------------------------- navigation grid
 const navChunks = new Map();
@@ -817,7 +818,8 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   const hsh = [...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
   const step = Math.floor(performance.now() / 1000 * 2.2) % 2;
   const spr = mode === "car" ? live.SPRITE_CARS[hsh % 8] : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;
-  if (mode !== "heli") items.push({ sx, sy, h: 2 * K, draw: () => {
+  const lamps = mode === "car" ? live.vlamps(x, y, z, a, 4.2, 1.7, 0.65) : mode === "bike" ? live.vlamps(x, y, z, a, 1.7, 0, 0.9, { noBeam: true }) : null;
+  if (mode !== "heli") items.push({ sx, sy, h: 2 * K, lamps, draw: () => {
     if (live.sprite(spr, x, y, z, a, "p:" + name)) return;
     if (mode === "car") live.box(x, y, z + 0.2, a, 4.3, 1.8, 1.45, live.shade(col, 1.1), col, "rgba(20,24,28,.6)");
     else {

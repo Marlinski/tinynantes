@@ -14,7 +14,15 @@ const tint = document.getElementById("tint"), tg = tint.getContext("2d");
 const fx = document.getElementById("fx"), fg = fx.getContext("2d");
 const LAT = 47.218, LON = -1.553;
 
+// Debug overrides of time and weather: ?fx=night,rain in the URL, or the panel (F9 or ?debug).
+// TN.debug = { hour: null | 0..24 (local time of today), wx: null | "clear" | "cloudy" | "rain" | "storm" | "snow" | "fog" }
 const force = new Set((new URLSearchParams(location.search).get("fx") || "").split(",").filter(Boolean));
+TN.debug = { hour: null, wx: null };
+function clock() {                                  // the clock the effects follow
+  if (TN.debug.hour == null) return new Date();
+  const d = new Date(); d.setHours(Math.floor(TN.debug.hour), Math.round(TN.debug.hour % 1 * 60), 0, 0);
+  return d;
+}
 let wx = null;                                  // Open-Meteo "current" block
 
 // ---------------------------------------------------------------- sun
@@ -42,6 +50,12 @@ function sky() {
   let storm = code >= 95;
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) rain = Math.max(rain, code % 10 >= 5 || code >= 63 ? 2.5 : 0.8);
   if ((code >= 71 && code <= 77) || code === 85 || code === 86) snow = Math.max(snow, 0.5);
+  const dw = TN.debug.wx;
+  if (dw) { rain = snow = 0; fog = storm = false; cloud = { clear: 0, cloudy: 0.9 }[dw] ?? 1; }
+  if (dw === "rain") rain = 3;
+  if (dw === "storm") { rain = 6; storm = true; }
+  if (dw === "snow") snow = 1;
+  if (dw === "fog") fog = true;
   if (force.has("rain")) { rain = 3; cloud = 1; }
   if (force.has("storm")) { rain = 6; cloud = 1; storm = true; }
   if (force.has("snow")) { snow = 1; rain = 0; cloud = 1; }
@@ -53,7 +67,7 @@ function sky() {
 
 // ---------------------------------------------------------------- grade
 function grade(alt, s) {
-  if (force.has("night")) alt = -20; else if (force.has("dusk")) alt = 1; else if (force.has("day")) alt = 40;
+  if (TN.debug.hour == null) { if (force.has("night")) alt = -20; else if (force.has("dusk")) alt = 1; else if (force.has("day")) alt = 40; }
   const day = smooth(-7, 6, alt);                       // 0 night .. 1 day
   const golden = day > 0 ? (1 - smooth(4, 14, alt)) * smooth(-5, 2, alt) : 0;
   let col = mix([62, 82, 150], [255, 255, 255], day);   // multiply colour
@@ -111,7 +125,8 @@ function glowSprite(rgb) {
   g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
   return (sprites[k] = c);
 }
-const LAMP = [255, 184, 108], HEAD = [255, 240, 205], WINDOW = [255, 170, 90];
+const LAMP = [255, 184, 108], HEAD = [255, 244, 225], WINDOW = [255, 170, 90];
+const TAIL = [255, 36, 28], BEAM = [255, 236, 200], BLUE = [40, 110, 255];
 const NIGHTLIFE = new Set(["amenity=restaurant", "amenity=bar", "amenity=pub", "amenity=cafe", "amenity=fast_food",
   "amenity=nightclub", "amenity=cinema", "amenity=theatre", "amenity=biergarten"]);
 function glow(img, x, y, r, a) {
@@ -124,7 +139,7 @@ function drawLights(G) {
   if (k < 0.05) return;
   const s = TN.view.s * TN.dpr, W = fx.width, H = fx.height;
   if (!lamps) buildLamps();
-  const hour = new Date().getHours();
+  const hour = clock().getHours();
   const inView = (x, y, m) => x > -m && y > -m && x < W + m && y < H + m;
   // street lamps: a pool of light on the street and a bright head, in stepped bands on the coarse grid
   if (lamps && TN.view.s > 0.25) {
@@ -165,9 +180,21 @@ function drawLights(G) {
       if (inView(cx, cy, r) && !live.occluded(sx, sy, live.project(x, y, z)[1])) glow(img, cx, cy, r, 0.7 * k);
     }
   }
-  // vehicles
-  const img = glowSprite(HEAD);
-  for (const [cx, cy, kind] of live.lights) glow(img, cx, cy, Math.max(3, (kind === 2 ? 9 : 5) * s), 0.6 * k);
+  // vehicles: headlamps, tail lamps and the pool of the headlights on the road (siren flashers: drawLights below)
+  for (const [cx, cy, type] of live.lights) {
+    if (type === 1) glow(glowSprite(HEAD), cx, cy, Math.max(2, 2.6 * s), 0.85 * k);
+    else if (type === 3) glow(glowSprite(TAIL), cx, cy, Math.max(2, 2.2 * s), 0.75 * k);
+    else if (type === 5) glow(glowSprite(BEAM), cx, cy, Math.max(4, 6.5 * s), 0.32 * k);
+  }
+  fg.globalAlpha = 1;
+}
+// Blue flashers of emergency vehicles: by day too (softer), two phases alternating.
+function drawFlashers(G) {
+  const s = TN.view.s * TN.dpr, a = 0.55 + 0.4 * G.night;
+  for (const [cx, cy, type] of live.lights) {
+    if (type === 4) glow(glowSprite(BLUE), cx, cy, Math.max(4, 5 * s), a);
+    else if (type === 7) glow(glowSprite(BLUE), cx, cy, Math.max(2, 1.6 * s), a * 0.5);
+  }
   fg.globalAlpha = 1;
 }
 
@@ -236,7 +263,7 @@ function frame() {
   last = now;
   const w = Math.round(innerWidth * TN.dpr), h = Math.round(innerHeight * TN.dpr);
   for (const c of [tint, fx]) if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-  const S = sky(), G = grade(sunAltitude(Date.now()), S);
+  const S = sky(), G = grade(sunAltitude(clock().getTime()), S);
   const f = `brightness(${G.bright.toFixed(3)}) saturate(${G.sat.toFixed(3)})`;
   if (f !== lastFilter) { mapCv.style.filter = liveCv.style.filter = f; lastFilter = f; }
   tg.globalCompositeOperation = "source-over";
@@ -244,6 +271,7 @@ function frame() {
   drawClouds(G, S, dt);
   fg.clearRect(0, 0, w, h);
   drawLights(G);
+  drawFlashers(G);
   drawPrecip(S, dt);
   if (S.fog) { fg.fillStyle = `rgba(205,210,216,${0.22 + 0.1 * G.day})`; fg.fillRect(0, 0, w, h); }
   if (S.storm) {
@@ -272,3 +300,34 @@ function badge(S) {
 
 pollWeather(); setInterval(pollWeather, 600_000);
 requestAnimationFrame(frame);
+
+// ---------------------------------------------------------------- debug panel (F9, or ?debug in the URL)
+function debugPanel() {
+  let el = document.getElementById("dbg");
+  if (el) { el.hidden = !el.hidden; return; }
+  el = document.createElement("div"); el.id = "dbg"; el.className = "dbg";
+  const WX = [["", "météo réelle"], ["clear", "ciel clair"], ["cloudy", "nuageux"], ["rain", "pluie"], ["storm", "orage"],
+    ["snow", "neige"], ["fog", "brouillard"]];
+  el.innerHTML = `<b>Debug</b> <button class="x" title="Fermer">×</button>
+    <label><input type="checkbox" id="dbgReal" checked> heure réelle</label>
+    <label>heure <input type="range" id="dbgHour" min="0" max="24" step="0.25" value="12" disabled> <span id="dbgH">—</span></label>
+    <label>météo <select id="dbgWx">${WX.map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></label>
+    <small id="dbgInfo"></small>`;
+  document.body.append(el);
+  const real = el.querySelector("#dbgReal"), hr = el.querySelector("#dbgHour"), hl = el.querySelector("#dbgH");
+  const fmt = (h) => `${String(Math.floor(h)).padStart(2, "0")}:${String(Math.round(h % 1 * 60)).padStart(2, "0")}`;
+  const sync = () => { hr.disabled = real.checked; TN.debug.hour = real.checked ? null : +hr.value; hl.textContent = real.checked ? "—" : fmt(+hr.value); };
+  real.onchange = sync; hr.oninput = sync;
+  el.querySelector("#dbgWx").onchange = (e) => { TN.debug.wx = e.target.value || null; };
+  el.querySelector(".x").onclick = () => { el.hidden = true; };
+  setInterval(() => {
+    if (el.hidden) return;
+    const S = sky(), alt = sunAltitude(clock().getTime());
+    el.querySelector("#dbgInfo").textContent = `soleil ${alt.toFixed(1)}° · pluie ${S.rain} · neige ${S.snow} · nuages ${Math.round(S.cloud * 100)} %` +
+      (S.fog ? " · brouillard" : "") + (S.storm ? " · orage" : "");
+  }, 500);
+}
+addEventListener("keydown", (e) => {
+  if (e.code === "F9") { e.preventDefault(); debugPanel(); }
+});
+if (new URLSearchParams(location.search).has("debug")) debugPanel();

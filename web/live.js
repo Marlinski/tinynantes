@@ -20,7 +20,7 @@ const hgt = new Map();
 let hits = [];                                // clickable things drawn this frame: {x, y, r, open}
 
 export const live = {
-  world, project, toCanvas, zAt, along, vehiclePose, occluded, heightAt, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
+  world, project, toCanvas, zAt, along, vehiclePose, occluded, heightAt, vlamps, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
   get ctx() { return ctx; }, room: null,
   get vehicles() { return vehicles; }, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
@@ -334,6 +334,10 @@ async function loadSprites() {
 }
 const SPRITE_CARS = ["car_white_hatch", "car_black_sedan", "car_grey_suv", "car_red_hatch", "car_blue_sedan",
   "car_silver_van", "car_green_hatch", "car_yellow_sedan"];
+// Server cars by variant byte: mostly cars, some vans, a few lorries and taxis ([sprite, length, width]).
+const TRAFFIC = [...["car_white_hatch", "car_black_sedan", "car_grey_suv", "car_red_hatch", "car_blue_sedan", "car_silver_van",
+  "car_green_hatch", "car_yellow_sedan"].map((n) => [n, 4.3, 1.8]), ["car_teal_hatch", 3.9, 1.8], ["van_delivery", 5.6, 1.95],
+  ["truck_box", 7.6, 2.3], ["car_taxi", 4.5, 1.8], ...["car_white_hatch", "car_grey_suv", "car_blue_sedan", "car_black_sedan"].map((n) => [n, 4.3, 1.8])];
 // draw sprite `name` with its ground centre at world (x, y, z), heading ang; false if not available
 const spriteDir = new Map();            // key -> direction shown last (hysteresis: no flipping on a boundary)
 function sprite(name, x, y, z, ang, key, opt) {
@@ -408,7 +412,8 @@ function transitItems(t, rect) {
       for (let k = 0; k < 4; k++) {
         const q = segs[k];
         const [qx, qy] = project(q.x, q.y, q.z);
-        out.push({ sx: qx, sy: qy, h: 3.3, light: 2, draw: () => {
+        const lp = k === 0 ? vlamps(q.x, q.y, q.z, q.ang, TRAM_SEG, 2.4, 0.9, { noTail: true }) : k === 3 ? vlamps(q.x, q.y, q.z, q.ang, TRAM_SEG, 2.4, 0.9, { noBeam: true }).filter((l) => l[3] === LAMP_TAIL) : null;
+        out.push({ sx: qx, sy: qy, h: 3.3, lamps: lp, draw: () => {
                      if (!sprite(k === 0 ? "tram_head" : "tram_mid", q.x, q.y, q.z, q.ang, `${v.id}:${k}`)) coach(q.x, q.y, q.z, q.ang, TRAM_SEG - 0.35, 2.65, 3.3, color); },
                    hit: k === 0 ? hit : null, tip: k === 0 ? tip : null });
       }
@@ -419,7 +424,7 @@ function transitItems(t, rect) {
         box(p.x, p.y, p.z + 1.0, p.ang, 9, 3.6, 1.6, "#ffffff", GLASS, OUTLINE); }, hit, tip }); // cabin
     } else {
       const b = chord(world.shapes[v.shape], p.d + 6, 12);          // a 12 m bus on its two axles
-      out.push({ sx, sy, h: 3.0, light: 2, draw: () => { shadow(b.x, b.y, b.z, b.ang, 12, 2.55);
+      out.push({ sx, sy, h: 3.0, lamps: vlamps(b.x, b.y, b.z, b.ang, 12, 2.4, 0.9), draw: () => { shadow(b.x, b.y, b.z, b.ang, 12, 2.55);
         if (!sprite("bus", b.x, b.y, b.z, b.ang, v.id)) coach(b.x, b.y, b.z, b.ang, 12, 2.55, 3.0, color); }, hit, tip });
     }
   }
@@ -446,6 +451,25 @@ function personModel(x, y, z, ang, col, walk, bike) {
   box(x, y, z + lift + 0.42 * K, ang, 0.34 * K, 0.42 * K, 0.5 * K, shade(col, 1.12), col, ol);         // body
   box(x, y, z + lift + 0.92 * K, ang, 0.24 * K, 0.24 * K, 0.24 * K, "#f1c9a5", "#d9a982", ol);           // head
 }
+// Lights of a vehicle in world coordinates, for fx.js at night: [x, y, z, type] with type
+// 1 headlamp (white), 3 tail lamp (red), 5 headlight beam on the road ahead, 4 / 7 blue flashers (two phases).
+// Lamps on the side turned away from the camera are left out (they would glow through the body).
+const LAMP_HEAD = 1, LAMP_TAIL = 3, LAMP_BEAM = 5, LAMP_BLUE = 4, LAMP_BLUE2 = 7;
+function vlamps(x, y, z, ang, L, W, h, opt = {}) {
+  const c = Math.cos(ang), s = Math.sin(ang), back = TN.man.axes[2];
+  const face = c * back[0] + s * back[1];                         // > 0: the front is turned towards us
+  const at = (u, v, zz, type) => [x + u * c - v * s, y + u * s + v * c, z + zz, type];
+  const out = [];
+  const pair = W > 0.5 ? [-W * 0.36, W * 0.36] : [0];
+  if (face > -0.2) for (const v of pair) out.push(at(L / 2, v, h, LAMP_HEAD));
+  if (face < 0.2 && !opt.noTail) for (const v of pair) out.push(at(-L / 2, v, h, LAMP_TAIL));
+  if (!opt.noBeam) out.push(at(L / 2 + (W > 0.5 ? 6 : 3), 0, 0.1, LAMP_BEAM));
+  if (opt.siren) {
+    const on = Math.floor(performance.now() / 180) % 2;
+    out.push(at(opt.bar ?? 0, -0.45, opt.barZ ?? 1.7, on ? LAMP_BLUE : LAMP_BLUE2), at(opt.bar ?? 0, 0.45, opt.barZ ?? 1.7, on ? LAMP_BLUE2 : LAMP_BLUE));
+  }
+  return out;
+}
 function inhabitantItems(t, rect) {
   const out = [];
   if (TN.view.s < 0.9 && !TN.playing) return out;
@@ -454,13 +478,25 @@ function inhabitantItems(t, rect) {
     const [sx, sy] = project(x, y, z);
     if (!inRect(sx, sy, rect)) continue;
     const hit = { r: 10, open: () => live.open?.("agent", { id }) };
-    if (k === 0) out.push({ sx, sy, h: 1.5, light: 1, hit, draw: () => {
-      shadow(x, y, z, a, 4.3, 1.8);
-      if (!sprite(SPRITE_CARS[c % SPRITE_CARS.length], x, y, z, a, id)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
+    if (k === 0) {
+      const [name, L, W] = TRAFFIC[c % TRAFFIC.length];
+      out.push({ sx, sy, h: 1.5, lamps: vlamps(x, y, z, a, L, W - 0.1, 0.65), hit, draw: () => {
+        shadow(x, y, z, a, L + 0.1, W);
+        if (!sprite(name, x, y, z, a, id)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
+    } else if (k === 3) {
+      // emergency: variant = service (0 ambulance, 1 police, 2 fire) + 4 when the siren is on
+      const service = c & 3, siren = (c & 4) !== 0;
+      const [name, L, W, bar, barZ] = service === 1 ? ["ems_police", 4.5, 1.8, -0.2, 1.5]
+        : service === 2 ? ["ems_fire", 6.4, 2.2, 2.0, 2.95] : id % 4 === 0 ? ["ems_samu", 4.5, 1.8, -0.2, 1.6] : ["ems_ambulance", 5.6, 1.95, 1.6, 2.7];
+      out.push({ sx, sy, h: 2.5, lamps: vlamps(x, y, z, a, L, W - 0.1, 0.7, { siren, bar, barZ }), hit, draw: () => {
+        shadow(x, y, z, a, L + 0.1, W);
+        if (!sprite(name, x, y, z, a, id)) carModel(x, y, z, a, service === 2 ? "#c8261c" : "#f2f2ee"); } });
+    }
     else if (TN.view.s >= 1.6 || TN.playing) {
       const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;
       const name = k === 2 ? `bike_${c % 8}` : `walker_${c % 8}_${v > 0.2 ? Math.floor(now * v * 1.6 + id) % 2 : 0}`;
-      out.push({ sx, sy, h: 2, hit, draw: () => { if (!sprite(name, x, y, z, a, id)) personModel(x, y, z, a, col, phase, k === 2); } });
+      out.push({ sx, sy, h: 2, hit, lamps: k === 2 ? vlamps(x, y, z, a, 1.7, 0, 0.9, { noBeam: true }) : null,
+                 draw: () => { if (!sprite(name, x, y, z, a, id)) personModel(x, y, z, a, col, phase, k === 2); } });
     }
   }
   return out;
@@ -619,7 +655,7 @@ function frame() {
   for (const it of world3d) {
     if (it.sy && !it.room && occluded(it.sx, it.sy - (it.h || 2) * COS45 * 0.5, it.sy)) continue;
     it.draw(); consider(it);
-    if (it.light) lights.push([...toCanvas(it.sx, it.sy), it.light]);
+    if (it.lamps) for (const l of it.lamps) lights.push([...toCanvas(...project(l[0], l[1], l[2])), l[3]]);
   }
   live.lights = lights;
   for (const it of flat) { it.draw(); consider(it); }
