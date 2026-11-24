@@ -330,9 +330,27 @@ function inhabitants() {
     const a = s0.m.get(id);
     if (!a) { out.push(b); continue; }
     let da = b[5] - a[5]; da = Math.atan2(Math.sin(da), Math.cos(da));
-    out.push([id, b[1], a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f, a[5] + da * f, b[6], b[7]]);
+    const x = a[2] + (b[2] - a[2]) * f, y = a[3] + (b[3] - a[3]) * f;
+    out.push([id, b[1], x, y, a[4] + (b[4] - a[4]) * f, facing(id, x, y, a[5] + da * f, b[6]), b[6], b[7]]);
   }
+  if (out.length < motion.size / 2) for (const k of motion.keys()) if (!s1.m.has(k)) motion.delete(k);
   return out;
+}
+// The way an inhabitant faces = the way it is seen moving (its drawn position is offset to the kerb and to the
+// right of the road, so at corners the road's direction and its actual motion differ), smoothed; the server's
+// heading when it stands still (talking, waiting, gathered).
+const motion = new Map();               // id -> {x, y, ang}
+function facing(id, x, y, served, v) {
+  let m = motion.get(id);
+  if (!m) { m = { x, y, ang: served }; motion.set(id, m); return served; }
+  const dx = x - m.x, dy = y - m.y, d = Math.hypot(dx, dy);
+  if (d > 30) { m.x = x; m.y = y; m.ang = served; return served; }   // jumped (a new path): start again
+  if (v < 0.05) { m.x = x; m.y = y; let e = served - m.ang; m.ang += Math.atan2(Math.sin(e), Math.cos(e)) * 0.2; return m.ang; }
+  if (d > 0.35) {                                                    // moved enough to read a direction
+    const t = Math.atan2(dy, dx); let e = t - m.ang; e = Math.atan2(Math.sin(e), Math.cos(e));
+    m.ang += e * Math.min(1, 0.35 + d * 0.15); m.x = x; m.y = y;
+  }
+  return m.ang;
 }
 
 // ---------------------------------------------------------------- occlusion (height tiles)
@@ -458,12 +476,13 @@ function sprite(name, x, y, z, ang, key, opt) {
   if (!im?.complete || !im.naturalWidth) return false;
   const f = ang / (2 * Math.PI) * A.dirs;
   let k = ((Math.round(f) % A.dirs) + A.dirs) % A.dirs;
-  if (e.cells.length === 1) k = 0;                                  // a moored ship: drawn in its one real heading
+  const one = e.cells.length === 1;
+  if (one) k = 0;                                                   // a moored ship: drawn in its one real heading
   else if (key != null) {
     const prev = spriteDir.get(key);
     if (prev != null) {
       let dd = f - prev; dd -= Math.round(dd / A.dirs) * A.dirs;      // signed distance in directions
-      if (Math.abs(dd) < 0.75) k = prev;                               // stay until clearly past the boundary
+      if (Math.abs(dd) < 0.6) k = prev;                                // stay until past the boundary (no flicker)
     }
     spriteDir.set(key, k);
     if (spriteDir.size > 20000) spriteDir.clear();
@@ -472,8 +491,21 @@ function sprite(name, x, y, z, ang, key, opt) {
   const sc = TN.view.s * TN.dpr / e.ppm * (opt?.scale || 1);
   const [X, Y] = toCanvas(...project(x, y, z));
   ctx.imageSmoothingEnabled = sc < 1;
-  if (opt?.rot) {                                                   // a bank: turn the sprite about its anchor
-    ctx.save(); ctx.translate(X, Y); ctx.rotate(opt.rot);
+  // Sprites exist in A.dirs headings only (every 22.5°). The rest of the way to the true heading is a turn of the
+  // ground plane by d, as the camera sees it: M = P·R(d)·P⁻¹ (P: ground metres -> screen), applied about the anchor.
+  // The footprint then points exactly where the vehicle goes, whatever the direction; heights shear a little (≤13°).
+  let d = one ? 0 : ang - k * 2 * Math.PI / A.dirs;
+  d = Math.atan2(Math.sin(d), Math.cos(d));
+  if (opt?.rot || Math.abs(d) > 0.004) {
+    ctx.save(); ctx.translate(X, Y);
+    if (Math.abs(d) > 0.004) {
+      const [r, q] = TN.man.axes, a = r[0], b = r[1], c = q[0], g = q[1], det = a * g - b * c;
+      const co = Math.cos(d), si = Math.sin(d);
+      // P·R = [[a co + b si, -a si + b co], [c co + g si, -c si + g co]]; times P⁻¹ = [[g, -b], [-c, a]] / det
+      const m00 = a * co + b * si, m01 = -a * si + b * co, m10 = c * co + g * si, m11 = -c * si + g * co;
+      ctx.transform((m00 * g - m01 * c) / det, (m10 * g - m11 * c) / det, (-m00 * b + m01 * a) / det, (-m10 * b + m11 * a) / det, 0, 0);
+    }
+    if (opt?.rot) ctx.rotate(opt.rot);                              // a bank: turn the sprite about its anchor
     ctx.drawImage(im, cx, cy, w, h, -ax * sc, -ay * sc, w * sc, h * sc);
     ctx.restore();
   } else ctx.drawImage(im, cx, cy, w, h, X - ax * sc, Y - ay * sc, w * sc, h * sc);
