@@ -643,6 +643,42 @@ impl Sim {
         cand.iter().find(|c| { t -= c.1; t <= 0.0 }).map(|c| c.0)
     }
 
+    /// Someone just took a Naolib Vélo at this station (live open data): a cyclist leaves from there.
+    pub fn spawn_rental(&mut self, at: [f32; 2], station: &str) -> bool {
+        let Some(from) = self.g.nearest(at[0], at[1], BIKE, 150.0) else {
+            tracing::debug!("rental at {station}: no bike way near the station");
+            return false;
+        };
+        let hour = self.hour;
+        let sunday = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris).weekday().num_days_from_monday() == 6;
+        let mut found = None;
+        for _ in 0..5 {
+            let Some(k) = self.choose_poi_r(at[0], at[1], hour, sunday, 2500.0) else { continue };
+            let pp = self.pois[k].p;
+            let Some(to) = self.g.nearest(pp[0], pp[1], BIKE, 120.0) else { continue };
+            if let Some(path) = self.g.route(from, to, BIKE, 30000).filter(|p| p.len() >= 2) {
+                found = Some((k, path));
+                break;
+            }
+        }
+        let Some((k, path)) = found else {
+            tracing::debug!("rental at {station}: no route");
+            return false;
+        };
+        let seed: u32 = self.rng.gen();
+        let p = &self.pois[k];
+        let name = p.t.get("name").cloned().unwrap_or_default();
+        let persona = people::persona(&self.quartiers, people::PersonaInput {
+            seed, hour, home: None, place: Some((&p.k, &name)),
+            trip: people::Trip::Rental { from: station.to_string() }, march: None });
+        let v = self.rng.gen_range(3.8..5.5);
+        let ag = self.spawn(Kind::Bike, path, v);
+        ag.seed = seed & !0xff00 | (8 << 8); // variant 8: a Naolib bike
+        ag.poi = Some(k);
+        ag.persona = Some(Box::new(persona));
+        true
+    }
+
     /// Keep the demonstration filled: marchers start at the head of the route in small groups, a batucada in
     /// the middle, placards here and there; they walk it at a demonstration's pace and disperse at the end.
     fn spawn_marchers(&mut self, now: f64) {
@@ -1060,7 +1096,7 @@ impl Sim {
         let p = a.persona.as_deref();
         Some(serde_json::json!({
             "id": a.id, "kind": kind, "name": p.map(|p| p.first.clone()).unwrap_or_else(|| name_of(a.seed).to_string()),
-            "doing": what, "place": poi.map(|p| &p.id), "speed": a.v,
+            "doing": people::contract(&what), "place": poi.map(|p| &p.id), "speed": a.v,
             "persona": p.map(|p| serde_json::json!({
                 "name": p.full_name(), "age": p.age, "job": p.job, "quartier": p.quartier, "sub": p.sub,
                 "purpose": p.purpose, "destination": p.destination, "trip": p.trip_text(),

@@ -15,7 +15,7 @@ pub const EVENTS: &str = "244400404_agenda-evenements-nantes-metropole_v3";
 
 pub type Origin = (f64, f64);
 
-fn rel(o: Origin, lon: f64, lat: f64) -> [f64; 2] {
+pub fn rel(o: Origin, lon: f64, lat: f64) -> [f64; 2] {
     let (x, y) = l93::project(lon, lat);
     [((x - o.0) * 10.0).round() / 10.0, ((y - o.1) * 10.0).round() / 10.0]
 }

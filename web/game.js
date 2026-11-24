@@ -88,6 +88,27 @@ live.open = async (kind, d) => {
       <dt>Altitude</dt><dd>${p.ground ? "au sol" : `${Math.round(p.alt)} m`}</dd>
       <dt>Vitesse</dt><dd>${Math.round(p.speed * 3.6)} km/h</dd></dl>
       <p class="src">Position ADS-B : adsb.lol (ODbL) · Route : adsbdb.com</p>`);
+  } else if (kind === "elephant") {
+    const e = live.elephant();
+    const now = { walking: "Il est en balade dans le Parc des Chantiers.", spraying: "Il s'est arrêté et arrose les passants.",
+                  boarding: "Embarquement des passagers sous les Nefs.", parked: "Il attend sous les Nefs." }[e.phase];
+    openSide(`<p class="kicker">🐘 Les Machines de l'île</p><h2>Le Grand Éléphant</h2>
+      <p>12 m de haut, 21 m de long, 48 tonnes de bois et d'acier ; il emmène 50 passagers pour 30 minutes, à 1 à 3 km/h.</p>
+      <p><b>${e.why ? `Pas de balade : ${esc(e.why)}.` : esc(now)}</b></p>
+      ${e.next.length ? `<p>Prochains départs aujourd'hui : ${e.next.map(esc).join(" · ")}${e.rough ? " <small>(horaires indicatifs)</small>" : ""}</p>` : ""}
+      <p><a href="https://www.lesmachines-nantes.fr/" target="_blank" rel="noopener">lesmachines-nantes.fr</a></p>
+      <p class="src">Pas de position en direct : il suit les horaires publiés par Les Machines de l'île.</p>`);
+  } else if (kind === "bikes") {
+    const st = d, n = Math.max(0, st.bikes - (live.rented[st.id] || 0) + (live.returned[st.id] || 0));
+    const near = TN.playing && Math.hypot(st.p[0] - me.x, st.p[1] - me.y) < 25;
+    openSide(`<p class="kicker">🚲 Naolib Vélo</p><h2>${esc(st.name)}</h2><p>${esc(st.address)}</p>
+      <p><b>${n}</b> vélo${n > 1 ? "s" : ""} disponible${n > 1 ? "s" : ""} · <b>${st.docks}</b> place${st.docks > 1 ? "s" : ""} libre${st.docks > 1 ? "s" : ""} · ${st.capacity} au total
+      ${st.renting ? "" : "<br><span class=late>station fermée</span>"}</p>
+      ${near ? (me.rental ? `<button class="act" id="bikeAct">Rendre le vélo (E)</button>` :
+        n > 0 && st.renting ? `<button class="act" id="bikeAct">Louer un vélo (E)</button>` : "") : TN.playing ? `<p class="src">Approche-toi de la station pour louer un vélo.</p>` : ""}
+      ${live.bikesStale ? `<p class="src">⚠ Le flux de l'opérateur ne bouge plus depuis le ${new Date(live.bikesStale * 1000).toLocaleString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })} : chiffres figés, les départs de cyclistes sont simulés en attendant.</p>` : ""}
+      <p class="src">Disponibilités en temps réel (open data Naolib / JCDecaux). La location dans le jeu est fictive : elle ne touche à aucun vrai compte.</p>`);
+    if (near && $("bikeAct")) $("bikeAct").onclick = () => bikeAction(st);
   } else if (kind === "station") {
     openSide(`<h2>🚉 Gare de Nantes</h2><p>Chargement…</p>`);
     try {
@@ -403,6 +424,7 @@ addEventListener("blur", () => keys.clear());
 
 function setMode(m) {
   if (me.ride) return toast("Descends d'abord (E à un arrêt)");
+  if (me.rental && m !== "bike") return toast(`Rends d'abord ton Naolib Vélo à une station (E)`);
   if (me.mode === "heli" && m !== "heli" && me.alt > 3) return toast("Pose-toi d'abord (C pour descendre)");
   if (m === "car" && !onRoad(me.x, me.y)) return toast("Rejoins une rue pour prendre la voiture");
   if (room && m !== "walk") leave();
@@ -674,6 +696,32 @@ setInterval(() => {
   if (h) h.hidden = !s;
 }, 400);
 
+// ---------------------------------------------------------------- Naolib Vélo (pretend rentals)
+function nearestBikeStation(r = 14) {
+  let best = null, bd = r;
+  for (const st of live.bikeStations) {
+    const d = Math.hypot(st.p[0] - me.x, st.p[1] - me.y);
+    if (d < bd) { bd = d; best = st; }
+  }
+  return best;
+}
+function bikeAction(st) {
+  if (me.rental) {
+    if (st.docks - (live.returned[st.id] || 0) <= 0) return toast("Station pleine, essaie la suivante");
+    live.returned[st.id] = (live.returned[st.id] || 0) + 1;
+    const min = Math.max(1, Math.round((Date.now() - me.rental.t0) / 60000));
+    toast(`Vélo rendu à ${st.name} (${min} min). Location fictive, rien n'est facturé 😉`);
+    me.rental = null; setMode("walk"); closeSide(); return;
+  }
+  const n = st.bikes - (live.rented[st.id] || 0) + (live.returned[st.id] || 0);
+  if (!st.renting || n <= 0) return toast("Plus de vélo ici");
+  if (me.mode !== "walk") return toast("Descends d'abord");
+  live.rented[st.id] = (live.rented[st.id] || 0) + 1;
+  me.rental = { id: st.id, name: st.name, t0: Date.now() };
+  setMode("bike"); closeSide();
+  toast(`Naolib Vélo loué à ${st.name} ! Rends-le à n'importe quelle station (E). C'est pour de faux, ton vrai compte n'est pas touché.`);
+}
+
 // E: get on / off transit, talk to someone, or go into the place in front of you
 function action() {
   const t = live.now();
@@ -698,6 +746,9 @@ function action() {
       toast(`Tu montes : ${r.short || ""} → ${best.v.headsign}`); hud(); return;
     }
   }
+  // a Naolib Vélo station: rent, or bring the bike back
+  const bs = nearestBikeStation();
+  if (bs && (me.mode === "walk" || me.rental)) { bikeAction(bs); return; }
   // someone right next to you: talk
   const sim = nearestSim();
   if (sim && !room) { openTalk(sim.id); return; }
@@ -953,7 +1004,7 @@ function hud() {
        i >= 0 ? `Prochain arrêt : <b>${esc(v.names[i])}</b> (${Math.max(0, Math.round((v.arr[i] - t) / 60))} min)` : "");
   } else {
     const kmh = Math.round(Math.abs(me.v) * 3.6);
-    txt = `<b>${esc(session?.name)}</b> · ${{ walk: "à pied", bike: "à vélo", car: "en voiture", heli: "en hélico" }[me.mode]} · ${kmh} km/h${me.mode === "heli" ? ` · ${Math.round(me.alt)} m` : ""}`;
+    txt = `<b>${esc(session?.name)}</b> · ${{ walk: "à pied", bike: me.rental ? "en Naolib Vélo" : "à vélo", car: "en voiture", heli: "en hélico" }[me.mode]} · ${kmh} km/h${me.mode === "heli" ? ` · ${Math.round(me.alt)} m` : ""}`;
   }
   h.innerHTML = txt;
 }

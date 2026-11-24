@@ -22,7 +22,7 @@ let hits = [];                                // clickable things drawn this fra
 export const live = {
   world, project, toCanvas, zAt, along, vehiclePose, occluded, heightAt, vlamps, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
   get ctx() { return ctx; }, room: null,
-  get vehicles() { return vehicles; }, get people() { return inhabitants(); }, get menus() { return menus; }, get sections() { return sections; },
+  get vehicles() { return vehicles; }, get people() { return inhabitants(); }, get bikeStations() { return bikeStations; }, rented: {}, returned: {}, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
   now: () => Date.now() / 1000 + clockSkew,
   layers: [],                                 // functions (t) -> items, added by game.js
@@ -95,6 +95,112 @@ async function pollPlanes() {
 }
 async function pollMenus() {
   try { menus = new Set(await getJSON("api/places/menus")); } catch { /* none */ }
+}
+// ---------------------------------------------------------------- le Grand Éléphant (Les Machines de l'île)
+// Departures from lesmachines-nantes.fr/fr/infos-pratiques/horaires (checked 24 Nov 2026); 30-minute rides out
+// across the Parc des Chantiers and back. No live position is published.
+const ELEPHANT_ROUTE = [[-1262, -1020], [-1292, -1015], [-1322, -1010], [-1349, -1008]];   // out of the Nefs, across the Parc des Chantiers
+const EL_MAINT = ["2026-11-02", "2027-02-28"];
+const EL_TIMES = {
+  autumnWeek: ["10:15", "11:00", "11:45", "12:30", "13:15", "14:00", "15:00", "15:45"],
+  autumnWeekend: ["10:15", "11:00", "11:45", "14:15", "15:00", "15:45", "16:30", "17:15", "18:00"],
+  toussaint: ["10:15", "11:00", "11:45", "12:30", "13:15", "14:00", "15:00", "15:45", "16:30", "17:15", "18:00", "18:45"],
+  usual: ["10:15", "11:00", "11:45", "12:30", "14:00", "15:00", "15:45", "16:30", "17:15"],
+};
+function parisNow(t) {
+  const f = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short", hourCycle: "h23" });
+  const o = Object.fromEntries(f.formatToParts(new Date(t * 1000)).map((p) => [p.type, p.value]));
+  return { date: `${o.year}-${o.month}-${o.day}`, md: `${o.month}-${o.day}`, wd: o.weekday, min: +o.hour * 60 + +o.minute + +o.second / 60 };
+}
+function elephantDay(p) {
+  if (p.date >= EL_MAINT[0] && p.date <= EL_MAINT[1]) return { times: [], why: "en maintenance décennale jusqu'au 28 février 2027" };
+  if (p.md >= "09-01" && p.md <= "10-16") {
+    if (p.wd === "Mon") return { times: [], why: "pas de balade le lundi" };
+    return { times: p.wd === "Sat" || p.wd === "Sun" ? EL_TIMES.autumnWeekend : EL_TIMES.autumnWeek };
+  }
+  if (p.md >= "10-17" && p.md <= "11-01") return { times: EL_TIMES.toussaint };
+  return { times: EL_TIMES.usual, rough: true };
+}
+const RIDE = 30, OUT = [3, 11], BACK = [19, 27];        // boarding, out, a long stop (it sprays the crowd), back
+function routeAt(f) {          // position along the route, f in [0, 1]
+  const L = [0];
+  for (let i = 1; i < ELEPHANT_ROUTE.length; i++) L.push(L[i - 1] + Math.hypot(ELEPHANT_ROUTE[i][0] - ELEPHANT_ROUTE[i - 1][0], ELEPHANT_ROUTE[i][1] - ELEPHANT_ROUTE[i - 1][1]));
+  const d = Math.max(0, Math.min(1, f)) * L.at(-1);
+  let i = 1; while (i < L.length - 1 && L[i] < d) i++;
+  const a = ELEPHANT_ROUTE[i - 1], b = ELEPHANT_ROUTE[i], u = (d - L[i - 1]) / (L[i] - L[i - 1] || 1);
+  return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, Math.atan2(b[1] - a[1], b[0] - a[0])];
+}
+function elephantState(t) {
+  if (live.elephantAt) t = live.elephantAt + (t % 1800);       // debug: a chosen moment
+  const p = parisNow(t), day = elephantDay(p);
+  const deps = day.times.map((h) => { const [H, M] = h.split(":"); return +H * 60 + +M; });
+  const cur = deps.find((d) => p.min >= d && p.min < d + RIDE);
+  const next = day.times.filter((h, i) => deps[i] > p.min);
+  let x, y, ang, phase = "parked";
+  if (cur == null) { [x, y, ang] = routeAt(0); }
+  else {
+    const m = p.min - cur;
+    if (m < OUT[0]) { [x, y, ang] = routeAt(0); phase = "boarding"; }
+    else if (m < OUT[1]) { [x, y, ang] = routeAt((m - OUT[0]) / (OUT[1] - OUT[0])); phase = "walking"; }
+    else if (m < BACK[0]) { [x, y, ang] = routeAt(1); phase = "spraying"; }
+    else if (m < BACK[1]) { [x, y, ang] = routeAt(1 - (m - BACK[0]) / (BACK[1] - BACK[0])); ang += Math.PI; phase = "walking"; }
+    else { [x, y, ang] = routeAt(0); ang += Math.PI; phase = "boarding"; }
+  }
+  return { x, y, ang, phase, next, why: day.why, rough: day.rough };
+}
+live.elephant = () => elephantState(live.now());
+function elephantItems(t, rect) {
+  const e = elephantState(t), z = zAt(e.x, e.y);
+  const [sx, sy] = project(e.x, e.y, z);
+  if (!inRect(sx, sy, rect)) return [];
+  const step = e.phase === "walking" ? Math.floor(t / 0.9) % 2 : 0;
+  const out = [{ sx, sy, h: 12, tall: true, hit: { r: 30, dy: -25, open: () => live.open?.("elephant", e) },
+    tip: () => ["🐘 Le Grand Éléphant", e.why || { walking: "en balade", spraying: "s'arrête et arrose", boarding: "embarquement", parked: e.next.length ? `prochain départ ${e.next[0]}` : "au repos" }[e.phase]],
+    draw: () => {
+      if (!sprite(`elephant_${step}`, e.x, e.y, z, e.ang, "elephant")) {
+        box(e.x, e.y, z + 5.4, e.ang, 14, 6.4, 4.2, "#9c7048", "#7d5634", OUTLINE);
+        box(e.x + Math.cos(e.ang) * 8, e.y + Math.sin(e.ang) * 8, z + 6.6, e.ang, 4, 4.2, 4.4, "#9c7048", "#7d5634", OUTLINE);
+      }
+      if (e.phase === "spraying") {            // the trunk sprays the crowd
+        for (let k = 0; k < 10; k++) {
+          const u = ((t * 1.3 + k / 10) % 1), d = 12 + u * 9;
+          box(e.x + Math.cos(e.ang) * d, e.y + Math.sin(e.ang) * d, z + 4 + 6 * Math.sin(u * Math.PI), 0, 0.35, 0.35, 0.35, "#bfe6ff", "#8cc8f0");
+        }
+      }
+    } }];
+  if (e.why && TN.view.s >= 1.0) out.push({ sx, sy, overlay: true, draw: () => {
+    const [cx, cy] = toCanvas(...project(e.x, e.y, z + 14));
+    label(cx, cy, ["🔧 en maintenance"], "rgba(120,80,30,.92)");
+  } });
+  return out;
+}
+
+let bikeStations = [];
+async function pollBikes() {
+  try { const b = await getJSON("api/bikes"); bikeStations = b.stations; live.bikesStale = b.stale && b.reported; } catch { /* keep */ }
+}
+// Naolib Vélo stations: a dock bar with the live count of bikes (open data, JCDecaux GBFS)
+function bikeStationItems(t, rect) {
+  const out = [];
+  for (const st of bikeStations) {
+    const n = st.bikes - (live.rented?.[st.id] || 0) + (live.returned?.[st.id] || 0);
+    const [x, y] = st.p, z = zAt(x, y);
+    const [sx, sy] = project(x, y, z);
+    if (!inRect(sx, sy, rect)) continue;
+    out.push({ sx, sy, h: 1.2, hit: { r: 12, open: () => live.open?.("bikes", st) }, tip: () => [`🚲 ${st.name}`, `${Math.max(0, n)} vélos · ${st.docks} places`],
+      draw: () => {
+        box(x, y, z, 0.3, 4, 0.5, 0.25, "#6b737b", "#4a5158", OUTLINE);                            // dock rail
+        box(x - 2.2, y, z, 0.3, 0.3, 0.3, 2.2, "#ffd400", "#d9a800", OUTLINE);                     // totem
+        const k = Math.min(Math.max(0, n), 6);
+        for (let i = 0; i < k; i++) box(x - 1.5 + i * 0.6, y + 0.2 * Math.sin(0.3) * i, z + 0.25, 1.87, 1.5, 0.1, 0.9, "#9be15d", "#3e8d2f");
+      } });
+    if (TN.view.s >= 1.2) out.push({ sx, sy, overlay: true, draw: () => {
+      const [cx, cy] = toCanvas(...project(x - 2.2, y, z + 2.8));
+      label(cx, cy, [`${Math.max(0, n)}`], n > 0 ? "rgba(40,120,50,.92)" : "rgba(150,40,40,.92)");
+    } });
+  }
+  return out;
 }
 async function pollTrains() {
   try { trains = (await getJSON("api/trains")).items; } catch { /* keep */ }
@@ -584,6 +690,13 @@ function inhabitantItems(t, rect) {
         }
       } });
     }
+    else if (k === 2 && c === 8 && (TN.view.s >= 1.6 || TN.playing)) {
+      // on a Naolib Vélo just taken at a station (a real rental seen in the open data)
+      out.push({ sx, sy, h: 2, hit, draw: () => {
+        if (!sprite("bike_3", x, y, z, a, id)) personModel(x, y, z, a, "#2f6db0", now * v * 5 + id, true);
+        box(x + Math.cos(a) * 0.75, y + Math.sin(a) * 0.75, z + 0.75, a, 0.35, 0.4, 0.25, "#ffd400", "#9be15d", OUTLINE);   // basket
+      } });
+    }
     else if (TN.view.s >= 1.6 || TN.playing) {
       const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;
       const name = k === 2 ? `bike_${c % 8}` : `walker_${c % 8}_${v > 0.2 ? Math.floor(now * v * 1.6 + id) % 2 : 0}`;
@@ -729,6 +842,8 @@ function frame() {
     items.push(...planeItems(t, visibleRect(4000)));
     if (TN.view.s >= 0.6 || TN.playing) items.push(...transitItems(t, rect), ...trainItems(t, rect), ...inhabitantItems(t, rect));
     items.push(...placeItems(t, rect), ...poiItems(t, rect));
+    if (TN.view.s >= 0.8 || TN.playing) items.push(...bikeStationItems(t, rect));
+    if (TN.view.s >= 0.3 || TN.playing) items.push(...elephantItems(t, visibleRect(60)));
     if (TN.view.s >= 0.3 || TN.playing) items.push(...boatItems(t, visibleRect(300)));
   }
   for (const f of live.layers) items.push(...f(t, rect));
@@ -746,7 +861,7 @@ function frame() {
   const lights = [];
   for (const f of live.under) f(t);
   for (const it of world3d) {
-    if (it.sy && !it.room && occluded(it.sx, it.sy - (it.h || 2) * COS45 * 0.5, it.sy)) continue;
+    if (it.sy && !it.room && !it.tall && occluded(it.sx, it.sy - (it.h || 2) * COS45 * 0.5, it.sy)) continue;
     it.draw(); consider(it);
     if (it.lamps) for (const l of it.lamps) lights.push([...toCanvas(...project(l[0], l[1], l[2])), l[3]]);
   }
@@ -777,6 +892,7 @@ loadWorld().then(() => {
   pollEvents(); setInterval(pollEvents, 600_000);
   pollPlanes(); setInterval(pollPlanes, 20_000);
   pollTrains(); setInterval(pollTrains, 30_000);
+  pollBikes(); setInterval(pollBikes, 30_000);
   pollMenus(); setInterval(pollMenus, 900_000);
   requestAnimationFrame(frame);
 }).catch((e) => console.warn("live layer off:", e));

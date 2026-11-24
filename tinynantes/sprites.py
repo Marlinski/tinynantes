@@ -447,6 +447,43 @@ def belem():
     return m
 
 
+def grand_elephant(phase=0):
+    """Le Grand Éléphant of Les Machines de l'île (21 m long, 8 m wide, 12 m high): a tulipwood body on a riveted
+    steel frame, leather ears, a passenger terrace with a glazed lounge on its back. `phase` 0/1: walking poses."""
+    m = Model()
+    Wood, Wood2, Steel, Dark, Leather = (0.62, 0.44, 0.27), (0.5, 0.34, 0.2), (0.38, 0.38, 0.4), (0.2, 0.2, 0.22), (0.45, 0.3, 0.2)
+    Ivory, Rail = (0.92, 0.88, 0.78), (0.3, 0.24, 0.18)
+    s = 1.0 if phase else -1.0
+    for lx, ly, k in ((5.0, 2.4, 1), (5.0, -2.4, -1), (-5.5, 2.4, -1), (-5.5, -2.4, 1)):   # diagonal pairs swing together
+        dx, up = 0.9 * s * k, (0.35 if s * k > 0 else 0.0)
+        m.box(lx - 0.9 + dx, lx + 0.9 + dx, ly - 0.9, ly + 0.9, up, up + 0.5, Dark, Dark)          # foot
+        m.box(lx - 0.75 + dx * 0.6, lx + 0.75 + dx * 0.6, ly - 0.75, ly + 0.75, up + 0.5, 3.2, Wood2, Wood2)   # lower leg
+        m.box(lx - 0.55, lx + 0.55, ly - 0.55, ly + 0.55, 3.2, 3.8, Steel, Steel)                   # knee joint
+        m.box(lx - 0.85, lx + 0.85, ly - 0.85, ly + 0.85, 3.8, 6.0, Wood, Wood)                     # upper leg
+    m.box(-6.5, 4.0, -1.8, 1.8, 4.6, 5.4, Steel, Dark)                                             # under-frame
+    m.box(-8.0, 6.0, -3.2, 3.2, 5.4, 9.6, Wood, Wood, taper=0.12)                                  # body
+    for x in (-6.0, -3.0, 0.0, 3.0):                                                              # steel ribs
+        m.box(x - 0.15, x + 0.15, -3.25, 3.25, 5.6, 9.4, Steel, Steel)
+    m.box(-8.6, -8.0, -0.3, 0.3, 6.0, 8.6, Wood2, Wood2)                                           # tail
+    m.box(5.6, 9.6, -2.1, 2.1, 6.6, 11.0, Wood, Wood, front=Wood2)                                 # head
+    m.box(6.0, 9.2, -1.9, 1.9, 11.0, 12.2, Wood, Wood, taper=0.45)                                # domed forehead
+    m.box(9.0, 9.7, -1.3, -0.8, 9.2, 9.8, Dark); m.box(9.0, 9.7, 0.8, 1.3, 9.2, 9.8, Dark)         # eyes
+    for sy in (-1, 1):                                                                            # ears
+        m.box(6.4, 7.6, sy * 2.1 if sy > 0 else -5.8, 5.8 if sy > 0 else -2.1, 6.2, 10.8, Leather, Leather)
+        m.box(9.2, 12.2, sy * 1.0 - 0.2, sy * 1.0 + 0.2, 6.6, 7.0, Ivory, Ivory)                  # tusks
+    lift = 1.2 if phase else 0.0                                                                  # trunk
+    m.box(9.6, 11.0, -0.8, 0.8, 5.2, 7.6, Wood2, Wood2)
+    m.box(10.4, 11.6, -0.65, 0.65, 3.0 + lift * 0.5, 5.2, Wood2, Wood2)
+    m.box(11.0 + lift * 0.6, 12.0 + lift * 0.8, -0.5, 0.5, 0.6 + lift, 3.0 + lift * 0.5, Wood2, Wood2)
+    m.box(11.6 + lift * 1.2, 12.6 + lift * 1.2, -0.45, 0.45, 0.4 + lift, 1.2 + lift, Wood2, Wood2)   # curled tip
+    m.box(-7.6, 5.4, -3.6, 3.6, 9.6, 10.0, Wood2, Rail)                                            # terrace deck
+    for x0, x1, y0, y1 in ((-7.6, 5.4, 3.4, 3.6), (-7.6, 5.4, -3.6, -3.4), (5.2, 5.4, -3.6, 3.6), (-7.6, -7.4, -3.6, 3.6)):
+        m.box(x0, x1, y0, y1, 10.0, 11.0, Rail, Rail)                                              # balustrade
+    m.box(-4.5, 1.5, -2.4, 2.4, 10.0, 12.0, Wood, GLASS)                                           # glazed lounge
+    m.box(-4.8, 1.8, -2.7, 2.7, 12.0, 12.3, Steel, Steel)                                          # lounge roof
+    return m
+
+
 def peniche(cargo=(0.3, 0.38, 0.3)):
     """Freycinet barge (38.5 x 5.05 m): black hull, covered hold, wheelhouse and living quarters aft."""
     m = Model()
@@ -523,6 +560,8 @@ def catalogue():
     out.append(("boat_peniche2", peniche((0.45, 0.3, 0.2)), 6.0))
     out.append(("boat_sail", sailboat(), 9.0))
     out.append(("boat_motor", motorboat(), 12.0))
+    out.append(("elephant_0", grand_elephant(0), 7.0))
+    out.append(("elephant_1", grand_elephant(1), 7.0))
     try:
         moored = json.loads((ROOT / "web" / "data" / "world" / "water.json").read_text())["moored"]
     except (OSError, ValueError):
@@ -650,10 +689,31 @@ PROMPT_TRAIN = ("Repaint these 3D renders of a French train car as crisp isometr
                 "Keep the plain empty grey background. Do not add or remove anything.")
 
 
+PROMPT_ELEPHANT = ("Repaint this 3D render as the Grand Éléphant of Les Machines de l'île in Nantes: the famous 12 m tall "
+                   "mechanical elephant built of weathered greyish-brown tulipwood planks on a riveted steel frame, with "
+                   "visible gears and pistons in its legs, big leather ears, a long articulated trunk and a wooden passenger "
+                   "terrace with a balustrade and a small glazed lounge on its back. Draw it as one crisp isometric pixel-art "
+                   "sprite with dark outlines, in the style of a pixel-art city map. Keep it exactly where it is, with the same "
+                   "silhouette, size, direction and pose; fill the whole silhouette. No people. Keep the plain empty grey "
+                   "background.")
+
+
 def paint(img, seed=1, prompt=PROMPT):
     from .stylize import load_env, stylize          # same painter as the tiles
     load_env()
     return stylize(img, model="9b", seed=seed, prompt=prompt)
+
+
+def paint_cells(img, entries, prompt, seed=7):
+    """Paint every cell on its own, enlarged: the painter loses small sprites scattered over an empty sheet."""
+    out = img.copy()
+    for e in entries.values():
+        for cx, cy, w, h, *_ in e["cells"]:
+            box = (cx * SS, cy * SS, (cx + w) * SS, (cy + h) * SS) if img.size[0] > SHEET else (cx, cy, cx + w, cy + h)
+            cell = img.crop(box)
+            big = paint(cell.resize((1024, 1024), Image.NEAREST), seed=seed, prompt=prompt)
+            out.paste(big.convert("RGB").resize(cell.size, Image.LANCZOS), box[:2])
+    return out
 
 
 def cut(painted, mask, render):
@@ -670,7 +730,7 @@ def cut(painted, mask, render):
 
 def prompt_for(name):
     """The painting prompt of the sheet whose first sprite is `name`."""
-    for prefix, pr in (("ship_belem", PROMPT_BELEM), ("boat_", PROMPT_BOAT), ("ship_", PROMPT_BOAT), ("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
+    for prefix, pr in (("elephant_", PROMPT_ELEPHANT), ("ship_belem", PROMPT_BELEM), ("boat_", PROMPT_BOAT), ("ship_", PROMPT_BOAT), ("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
                        ("van_delivery", PROMPT_FLEET), ("walker", PROMPT_WALKERS), ("bike", PROMPT_BIKES)):
         if name.startswith(prefix):
             return pr
@@ -685,7 +745,7 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    LATER = ("walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal", "boat_", "ship_")
+    LATER = ("elephant_", "walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal", "boat_", "ship_")
     vehicles = [it for it in items if not it[0].startswith(LATER)]
     people = [it for it in items if it[0].startswith(("walker", "bike"))]
     aircraft = [it for it in items if it[0].startswith("heli")]
@@ -700,16 +760,19 @@ def main(argv):
     boats = [it for it in items if it[0].startswith("boat_")]
     batches += [([it], 256) for it in boats]
     batches += [([it], SHEET) for it in items if it[0].startswith("ship_")]
+    batches += [([it], 256) for it in items if it[0].startswith("elephant_")]
     atlas = {"dirs": DIRS, "sheets": []}
     for k, (batch, cell) in enumerate(batches):
         img, mask, entries = render_sheet(batch, view, cell)
         img.save(work / f"render_{k}.png"); mask.save(work / f"mask_{k}.png")
         pfile = work / f"paint_{k}.png"
         if what in ("paint", "all") or pfile.exists():
+            if not pfile.exists() and batch[0][0].startswith("elephant_"):
+                paint_cells(img, entries, PROMPT_ELEPHANT).save(pfile)
             if not pfile.exists():
                 pr = prompt_for(batch[0][0])
                 # seeds picked by eye: 3 gave the cleanest helicopters, 7 planes and trains without stray people
-                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET, PROMPT_BOAT, PROMPT_BELEM) else 1
+                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET, PROMPT_BOAT, PROMPT_BELEM, PROMPT_ELEPHANT) else 1
                 paint(img, prompt=pr, seed=seed).save(pfile)
             sprite = cut(Image.open(pfile), mask, img)
         else:

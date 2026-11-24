@@ -184,6 +184,8 @@ pub const ARCHETYPES: &[(&str, &str)] = &[
 pub enum Trip {
     Walk,
     Bike,
+    /// on a Naolib Vélo taken at this station
+    Rental { from: String },
     /// on a tram, bus or Navibus: line, kind ("tram", "bus", "navibus"), from stop, to stop
     Transit { line: String, kind: String, from: String, to: String },
 }
@@ -225,6 +227,7 @@ impl Persona {
         match &self.trip {
             Trip::Walk => "à pied".into(),
             Trip::Bike => "à vélo".into(),
+            Trip::Rental { from } => format!("en Naolib Vélo pris à la station {from}"),
             Trip::Transit { line, kind, from, to } => format!("{kind} {line} de {from} à {to}"),
         }
     }

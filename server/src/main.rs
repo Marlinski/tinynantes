@@ -11,6 +11,7 @@
 //! Env: TN_WEB (default ../web), TN_DATA (cache + SQLite, default ./data), TN_PLACES (crawled places, default
 //! TN_DATA/places), TN_PORT (default 8080), RUST_LOG.
 
+mod bikes;
 mod feeds;
 mod gtfs;
 mod l93;
@@ -102,6 +103,7 @@ struct App {
     /// places of the map (pois.json): id -> (name, kind, website)
     pois: Arc<HashMap<String, (String, String, Option<String>)>>,
     news: Arc<RwLock<news::News>>,
+    bikes: Arc<RwLock<bikes::Bikes>>,
     talker: Arc<talk::Talker>,
 }
 
@@ -200,6 +202,7 @@ async fn main() -> anyhow::Result<()> {
         menus: Arc::new(menus::Fetcher::new()?),
         pois: Arc::new(load_pois(&web)),
         news: Default::default(),
+        bikes: Default::default(),
         talker,
     });
     let players = players::open(&app.data.join("tinynantes.db"))?;
@@ -214,11 +217,13 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(menus_nightly(app.clone()));
     tokio::spawn(sncf_loop(app.clone()));
     tokio::spawn(news::run(app.http.clone(), app.news.clone()));
+    tokio::spawn(bikes::run(app.http.clone(), app.origin, app.bikes.clone()));
     let web2 = web.clone();
     let sim = tokio::task::spawn_blocking(move || sim::build(&web2)).await??;
     let world = sim::World::new(sim);
     tokio::spawn(sim::run(world.clone()));
     tokio::spawn(sim_inputs(app.clone(), world.clone()));
+    tokio::spawn(bike_departures(app.clone(), world.clone()));
 
     let api = Router::new()
         .route("/api/transit/vehicles", get(vehicles))
@@ -244,6 +249,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/talk", post(talk_h))
         .route("/api/talk/end", post(talk_end))
         .route("/api/news", get(news_h))
+        .route("/api/bikes", get(bikes_h))
         .with_state(TalkState { app: app.clone(), world: world.clone(), players: players.clone() });
     let living = Router::new()
         .route("/api/world", get(world_ws))
@@ -705,6 +711,39 @@ async fn sim_inputs(app: Arc<App>, w: Arc<sim::World>) {
     }
 }
 
+/// Real bikes taken from Naolib Vélo stations become simulated cyclists leaving from there. When the operator's
+/// counts stop moving (it happens: the feed can stay frozen for hours or weeks), stand-in rentals leave from
+/// stations that have bikes, at a pace that follows the hour of the day.
+async fn bike_departures(app: Arc<App>, w: Arc<sim::World>) {
+    use rand::Rng;
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let mut gone: Vec<_> = std::mem::take(&mut app.bikes.write().await.departures);
+        {
+            let b = app.bikes.read().await;
+            if b.updated - b.reported > 1800 && !b.stations.is_empty() {
+                use chrono::Timelike;
+                let h = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris).hour();
+                // rentals per 5 s across the network: busy at rush hours, nearly none at night
+                let rate = match h { 7..=9 | 17..=19 => 0.5, 10..=16 => 0.3, 20..=22 => 0.15, _ => 0.02 };
+                let mut r = rand::thread_rng();
+                if r.gen::<f64>() < rate {
+                    let open: Vec<_> = b.stations.iter().filter(|s| s.renting && s.bikes > 0).collect();
+                    if !open.is_empty() {
+                        let s = open[r.gen_range(0..open.len())];
+                        gone.push(([s.p[0] as f32, s.p[1] as f32], s.name.clone()));
+                    }
+                }
+            }
+        }
+        if !gone.is_empty() {
+            let mut s = w.sim.write().await;
+            let ok = gone.iter().filter(|(p, name)| s.spawn_rental(*p, name)).count();
+            tracing::debug!("bikes: {} Naolib rentals, {ok} cyclists sent off", gone.len());
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct ViewMsg {
     x0: f32,
@@ -841,6 +880,13 @@ async fn news_h(State(t): State<TalkState>) -> Response {
     let n = t.app.news.read().await;
     axum::Json(serde_json::json!({ "items": n.items, "march": n.march, "marching": t.world.sim.read().await.marching(),
                                     "llm": t.app.talker.llm(), "updated": n.updated })).into_response()
+}
+
+/// GET /api/bikes: Naolib Vélo stations with their live bikes and free docks.
+async fn bikes_h(State(t): State<TalkState>) -> Response {
+    let b = t.app.bikes.read().await;
+    axum::Json(serde_json::json!({ "stations": b.stations, "updated": b.updated, "reported": b.reported,
+                                    "stale": b.updated - b.reported > 1800 })).into_response()
 }
 
 fn sky(code: i64) -> &'static str {
