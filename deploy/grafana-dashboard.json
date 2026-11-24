@@ -1,0 +1,557 @@
+{
+ "title": "Tiny Nantes",
+ "uid": "tinynantes",
+ "schemaVersion": 39,
+ "time": {
+  "from": "now-24h",
+  "to": "now"
+ },
+ "refresh": "1m",
+ "templating": {
+  "list": [
+   {
+    "name": "datasource",
+    "type": "datasource",
+    "query": "prometheus",
+    "label": "Prometheus"
+   }
+  ]
+ },
+ "panels": [
+  {
+   "type": "stat",
+   "title": "Joueurs en ligne",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "expr": "tn_players_online",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Joueurs actifs 24 h",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "expr": "tn_users_active{window=\"24h\"}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Ont parlé aux habitants 24 h",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "expr": "tn_talk_players{window=\"24h\"}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Répliques IA aujourd'hui",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "expr": "tn_llm_replies_today",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Habitants simulés",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "expr": "sum(tn_sim_agents)",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Mémoire",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "expr": "tn_process_resident_bytes",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Joueurs en ligne",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_players_online",
+     "legendFormat": "en ligne",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Conversations : tours par issue (par minute)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (outcome) (rate(tn_talk_turns_total[5m])) * 60",
+     "legendFormat": "{{outcome}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Appels au modèle par modèle (par minute)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (model, kind) (rate(tn_llm_requests_total[5m])) * 60",
+     "legendFormat": "{{kind}} · {{model}}",
+     "refId": "A"
+    },
+    {
+     "expr": "sum by (kind) (rate(tn_llm_errors_total[5m])) * 60",
+     "legendFormat": "erreurs {{kind}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Tokens (par heure)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (kind, dir) (rate(tn_llm_tokens_total[1h])) * 3600",
+     "legendFormat": "{{kind}} {{dir}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Connexions et chat (par heure)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (outcome) (rate(tn_logins_total[1h])) * 3600",
+     "legendFormat": "connexion {{outcome}}",
+     "refId": "A"
+    },
+    {
+     "expr": "rate(tn_chat_messages_total[1h]) * 3600",
+     "legendFormat": "messages de chat",
+     "refId": "B"
+    },
+    {
+     "expr": "rate(tn_ws_sessions_total[1h]) * 3600",
+     "legendFormat": "sessions live",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Habitants simulés par type",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 20,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_sim_agents",
+     "legendFormat": "{{kind}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Requêtes HTTP par route (par seconde)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 28,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (route) (rate(tn_http_requests_total[5m]))",
+     "legendFormat": "{{route}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Erreurs HTTP (par minute)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 28,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (route, status) (rate(tn_http_requests_total{status=~\"4xx|5xx\"}[5m])) * 60",
+     "legendFormat": "{{status}} {{route}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Temps de réponse moyen par route",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 36,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (route) (rate(tn_http_request_seconds_total[5m])) / sum by (route) (rate(tn_http_requests_total[5m]))",
+     "legendFormat": "{{route}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Flux en direct : âge de la dernière mise à jour",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 36,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_feed_age_seconds",
+     "legendFormat": "{{feed}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "state-timeline",
+   "title": "Flux en direct : état (1 = OK)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 44,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_feed_up",
+     "legendFormat": "{{feed}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Vélos Naolib",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 44,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_bikes_available",
+     "legendFormat": "vélos dispo",
+     "refId": "A"
+    },
+    {
+     "expr": "tn_bike_stations",
+     "legendFormat": "stations {{state}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Avions, événements, actus",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 52,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_planes",
+     "legendFormat": "avions",
+     "refId": "A"
+    },
+    {
+     "expr": "tn_events_today",
+     "legendFormat": "événements {{source}}",
+     "refId": "B"
+    },
+    {
+     "expr": "tn_news_items",
+     "legendFormat": "titres d'actu",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Mémoire du serveur",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 52,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "tn_process_resident_bytes",
+     "legendFormat": "RSS",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   }
+  }
+ ],
+ "tags": [
+  "tinynantes"
+ ]
+}
