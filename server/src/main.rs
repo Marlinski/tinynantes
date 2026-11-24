@@ -44,7 +44,7 @@ use prost::Message;
 use serde::Serialize;
 use tokio::sync::RwLock;
 use tower_http::compression::CompressionLayer;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 const WEATHER_URL: &str = "https://api.open-meteo.com/v1/forecast?latitude=47.218&longitude=-1.553&current=temperature_2m,precipitation,rain,snowfall,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,is_day,visibility&daily=sunrise,sunset&timezone=Europe%2FParis&forecast_days=1";
 const RT_URL: &str = "https://api.okina.fr/gateway/semgtfsrt/realtime/trip-updates/NAOLIBORG";
@@ -255,10 +255,23 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/world", get(world_ws))
         .route("/api/agent/:id", get(agent))
         .with_state(world);
+    // The painted map (tile pyramids, height maps, headings.json, tiles.json) can live apart from the code, on its
+    // own volume (TN_TILES), so a code deploy doesn't carry half a gigabyte of drawings. Default: web/data.
+    let tiles = std::env::var("TN_TILES").map(PathBuf::from).ok()
+        .filter(|d| d.join("headings.json").exists())
+        .unwrap_or_else(|| web.join("data"));
+    tracing::info!("tiles from {tiles:?}");
+    let mut map = Router::new()
+        .route_service("/data/headings.json", ServeFile::new(tiles.join("headings.json")))
+        .route_service("/data/tiles.json", ServeFile::new(tiles.join("tiles.json")));
+    for h in 0..8 {
+        map = map.nest_service(&format!("/data/h{h}"), ServeDir::new(tiles.join(format!("h{h}"))));
+    }
     let router = api
         .merge(social)
         .merge(living)
         .merge(talking)
+        .merge(map)
         .fallback_service(ServeDir::new(&web).append_index_html_on_directories(true))
         .layer(middleware::from_fn(cache_headers))
         .layer(CompressionLayer::new());
@@ -275,6 +288,8 @@ async fn cache_headers(req: Request, next: Next) -> Response {
         "no-cache"
     } else if path.ends_with(".json") || path.ends_with(".html") || path == "/" || path.ends_with(".js") || path.ends_with(".css") {
         "no-cache" // revalidate: they change on every publish
+    } else if path.starts_with("/data/h") {
+        "public, max-age=2592000" // map tiles: their URLs carry the tiles' own version (tiles.json)
     } else if path.starts_with("/data/") {
         "public, max-age=86400"
     } else {

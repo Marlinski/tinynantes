@@ -344,6 +344,7 @@ function heightTile(i, j) {
   if (t) { hgt.delete(k); hgt.set(k, t); return t; }        // refresh its place in the LRU order
   t = { ready: false };
   hgt.set(k, t);
+  if (TN.man?.sets && !TN.man.sets[0].has(`${i}_${j}`)) { t.missing = true; return t; }   // off the map: no file
   const im = new Image();
   im.onload = () => {
     const c = document.createElement("canvas"); c.width = im.width; c.height = im.height;
@@ -353,7 +354,7 @@ function heightTile(i, j) {
     t.data = d; t.w = im.width; t.ready = true;
   };
   im.onerror = () => { t.missing = true; };
-  im.src = `data/h${TN.H}/hgt/${i}_${j}.png${TN.v}`;
+  im.src = `data/h${TN.H}/hgt/${i}_${j}.png${TN.tv}`;
   while (hgt.size > HGT_MAX) hgt.delete(hgt.keys().next().value);
   return t;
 }

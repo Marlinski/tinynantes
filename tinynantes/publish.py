@@ -90,6 +90,9 @@ def main():
         publish_heights(h, DATA / f"h{h}" / "hgt")
         heads.append(h)
     (DATA / "headings.json").write_text(json.dumps(heads))
+    # the tiles' own version: their URLs carry it, so code deploys leave browsers' tile caches alone
+    import time
+    (DATA / "tiles.json").write_text(json.dumps({"version": time.strftime("%Y%m%d-%H%M", time.gmtime()), "headings": heads}))
     (DATA / "places.json").write_text(json.dumps(places(), ensure_ascii=False))
 
 
