@@ -22,7 +22,7 @@ let hits = [];                                // clickable things drawn this fra
 export const live = {
   world, project, toCanvas, zAt, along, vehiclePose, occluded, heightAt, vlamps, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
   get ctx() { return ctx; }, room: null,
-  get vehicles() { return vehicles; }, get menus() { return menus; }, get sections() { return sections; },
+  get vehicles() { return vehicles; }, get people() { return inhabitants(); }, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
   now: () => Date.now() / 1000 + clockSkew,
   layers: [],                                 // functions (t) -> items, added by game.js
@@ -569,6 +569,20 @@ function inhabitantItems(t, rect) {
       out.push({ sx, sy, h: 2.5, lamps: vlamps(x, y, z, a, L, W - 0.1, 0.7, { siren, bar, barZ }), hit, draw: () => {
         shadow(x, y, z, a, L + 0.1, W);
         if (!sprite(name, x, y, z, a, id)) carModel(x, y, z, a, service === 2 ? "#c8261c" : "#f2f2ee"); } });
+    }
+    else if (k === 4 && (TN.view.s >= 0.9 || TN.playing)) {
+      // in a demonstration: marchers, batucada drummers (they bounce), placards held high
+      const role = c & 3, col = CLOTHES[(c >> 2) % CLOTHES.length];
+      const walkF = Math.floor(now * 1.4 + id) % 2, bob = role === 1 ? Math.abs(Math.sin(now * 9 + id)) * 0.25 : 0;
+      out.push({ sx, sy, h: 2, hit, draw: () => {
+        if (!sprite(`walker_${(c >> 2) % 8}_${walkF}`, x, y, z + bob, a, id)) personModel(x, y, z, a, col, now * 4 + id, false);
+        const fx = Math.cos(a), fy = Math.sin(a);
+        if (role === 1) box(x + fx * 0.45, y + fy * 0.45, z + 0.9 + bob, a, 0.55, 0.55, 0.45, "#f2c14e", "#c0392b", OUTLINE);   // drum
+        if (role === 2) {
+          box(x, y, z + 1.4, a, 0.06, 0.06, 1.3, "#7a5a3a", "#7a5a3a");                                                     // stick
+          box(x, y, z + 2.5, a + Math.PI / 2, 1.3, 0.06, 0.8, "#f6f3ea", ["#e74c3c", "#2e86de", "#27ae60", "#f39c12"][id % 4], OUTLINE); // placard
+        }
+      } });
     }
     else if (TN.view.s >= 1.6 || TN.playing) {
       const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;

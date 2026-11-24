@@ -25,6 +25,8 @@ use rand::{Rng, SeedableRng};
 use serde::Deserialize;
 use tokio::sync::{watch, RwLock};
 
+use crate::people::{self, Persona, Quartiers, Ride, TransitIndex};
+
 // ---------------------------------------------------------------- network
 
 const DRIVE: u8 = 1;
@@ -249,6 +251,8 @@ pub enum Kind {
     Bike = 2,
     /// ambulance, police or fire engine; its variant byte = service (0 ambulance, 1 police, 2 fire) + 4 × siren
     Emergency = 3,
+    /// a pedestrian in a demonstration; variant = role (0 marcher, 1 batucada drummer, 2 placard) + 4 × colour
+    Marcher = 4,
 }
 
 /// Where emergency vehicles start from and return to (web/data/world/bases.json).
@@ -276,6 +280,10 @@ enum Plan {
     Going,
     Inside { until: f64 },
     Leaving,
+    /// at the stop, until the tram/bus/Navibus leaves
+    Waiting { until: f64 },
+    /// on board (not drawn) until it reaches the stop they get off at
+    Riding { until: f64 },
 }
 
 struct Agent {
@@ -297,6 +305,13 @@ struct Agent {
     service: u8,
     siren: bool,
     base: Option<usize>,
+    /// pedestrians and cyclists: who they are
+    persona: Option<Box<Persona>>,
+    /// the ride they are on or about to take, and where they walk once off
+    ride: Option<Ride>,
+    /// stopped to talk with a player until then, facing this way
+    hold_until: f64,
+    face: f32,
 }
 
 /// What clients get for one inhabitant: [id, kind, x, y, z, heading, speed, colour/variant]
@@ -318,6 +333,21 @@ pub struct Sim {
     sections: Vec<SectionIn>,
     rain: f32,
     bases: Vec<Base>,
+    quartiers: Quartiers,
+    /// per place: how many places within 300 m (the lively centre draws more people)
+    liveliness: Vec<f32>,
+    /// the railway station (people arriving by train)
+    station: Option<[f32; 2]>,
+    transit: Option<Arc<TransitIndex>>,
+    march: Option<March>,
+    hour: u32,
+}
+
+/// A demonstration going through the centre: its route, why, and since when.
+pub struct March {
+    pub motive: String,
+    route: Vec<u32>,
+    pub until: f64,
 }
 
 const FIRST_NAMES: &[&str] = &[
@@ -337,6 +367,31 @@ fn crowd(hour: u32, weekend: bool) -> f32 {
     const WE: [f32; 24] = [0.15, 0.1, 0.06, 0.03, 0.02, 0.03, 0.06, 0.12, 0.25, 0.45, 0.65, 0.8, 0.9, 0.85, 0.9, 1.0,
         1.0, 0.95, 0.85, 0.7, 0.6, 0.5, 0.4, 0.25];
     (if weekend { WE } else { WD })[hour as usize % 24]
+}
+
+/// How much a kind of place draws people at this hour (the density map: meals, shops on Saturdays, bars at
+/// night, museums at weekends...). 1 = ordinary.
+fn attract(k: &str, hour: u32, weekend: bool) -> f32 {
+    let h = hour;
+    let sat = weekend; // Saturdays and Sundays alike, shops are closed on Sundays anyway (open())
+    match k {
+        "amenity=restaurant" if (12..14).contains(&h) || (19..22).contains(&h) => 3.5,
+        "amenity=restaurant" => 0.6,
+        "amenity=fast_food" if (12..14).contains(&h) || (19..23).contains(&h) => 3.0,
+        "amenity=cafe" if (7..10).contains(&h) => 2.5,
+        "amenity=cafe" if sat && (10..18).contains(&h) => 2.2,
+        "shop=bakery" if (7..9).contains(&h) || (17..20).contains(&h) => 2.5,
+        "shop=bakery" if sat && (8..13).contains(&h) => 3.0,
+        "amenity=bar" | "amenity=pub" | "amenity=biergarten" if (18..24).contains(&h) || h < 2 => if sat { 4.5 } else { 3.0 },
+        "amenity=nightclub" => if sat { 3.0 } else { 1.0 },
+        "amenity=marketplace" if (8..13).contains(&h) => if sat { 5.0 } else { 3.0 },
+        "amenity=cinema" | "amenity=theatre" if (19..23).contains(&h) => 3.0,
+        "amenity=cinema" if sat && (14..19).contains(&h) => 2.5,
+        "tourism=museum" | "tourism=gallery" | "tourism=attraction" | "tourism=viewpoint" => if sat { 3.5 } else { 1.5 },
+        "leisure=sports_centre" if (18..22).contains(&h) || (sat && (9..13).contains(&h)) => 2.0,
+        k if k.starts_with("shop=") && (11..19).contains(&h) => if sat { 3.0 } else { 1.4 },
+        _ => 1.0,
+    }
 }
 
 /// Is this kind of place open at this hour? (opening_hours parsing is for later; typical French hours)
@@ -368,9 +423,22 @@ impl Sim {
                 Some(Base { service, node, name: b.name.clone(), weight })
             })
             .collect();
+        let pois: Vec<PoiIn> = pois.into_iter().filter(|p| p.t.contains_key("name")).collect();
+        let mut grid: HashMap<(i32, i32), u32> = HashMap::new();
+        for p in &pois {
+            *grid.entry(((p.p[0] / 300.0).floor() as i32, (p.p[1] / 300.0).floor() as i32)).or_default() += 1;
+        }
+        let liveliness = pois.iter().map(|p| {
+            let (cx, cy) = ((p.p[0] / 300.0).floor() as i32, (p.p[1] / 300.0).floor() as i32);
+            let mut n = 0;
+            for i in -1..=1 { for j in -1..=1 { n += grid.get(&(cx + i, cy + j)).copied().unwrap_or(0); } }
+            n as f32 / 3.0
+        }).collect();
         Sim {
             g,
-            pois: pois.into_iter().filter(|p| p.t.contains_key("name")).collect(),
+            liveliness,
+            station: None,
+            pois,
             stops,
             agents: vec![],
             next_id: 1,
@@ -379,6 +447,49 @@ impl Sim {
             sections: vec![],
             rain: 0.0,
             bases,
+            quartiers: Quartiers::default(),
+            transit: None,
+            march: None,
+            hour: 12,
+        }
+    }
+
+    pub fn set_station(&mut self, p: [f32; 2]) {
+        self.station = Some(p);
+    }
+    pub fn set_quartiers(&mut self, q: Quartiers) {
+        self.quartiers = q;
+    }
+    pub fn set_transit(&mut self, t: Arc<TransitIndex>) {
+        self.transit = Some(t);
+    }
+    pub fn marching(&self) -> Option<&str> {
+        self.march.as_ref().map(|m| m.motive.as_str())
+    }
+
+    /// Start (or stop, with None) a demonstration along `waypoints` (local metres) until `until`.
+    pub fn set_march(&mut self, m: Option<(String, Vec<[f32; 2]>, f64)>) {
+        let Some((motive, wps, until)) = m else {
+            self.march = None;
+            return;
+        };
+        if self.march.as_ref().is_some_and(|x| x.motive == motive) {
+            return;
+        }
+        let nodes: Vec<u32> = wps.iter().filter_map(|w| self.g.nearest(w[0], w[1], WALK, 120.0)).collect();
+        let mut route: Vec<u32> = vec![];
+        for w in nodes.windows(2) {
+            if let Some(p) = self.g.route(w[0], w[1], WALK, 20000) {
+                if route.last() == p.first() {
+                    route.extend_from_slice(&p[1..]);
+                } else {
+                    route.extend(p);
+                }
+            }
+        }
+        if route.len() >= 2 {
+            tracing::info!("march: {motive} ({} nodes)", route.len());
+            self.march = Some(March { motive, route, until });
         }
     }
 
@@ -422,6 +533,10 @@ impl Sim {
             service: 0,
             siren: false,
             base: None,
+            persona: None,
+            ride: None,
+            hold_until: 0.0,
+            face: 0.0,
         });
         self.agents.last_mut().unwrap()
     }
@@ -509,16 +624,54 @@ impl Sim {
         ag.base = Some(k);
     }
 
-    fn choose_poi(&mut self, x: f32, y: f32, hour: u32, sunday: bool) -> Option<usize> {
-        for _ in 0..30 {
+    /// A place to go, drawn from the density map: open places, weighted by what draws people at this hour,
+    /// by how lively the area is (places around it) and by distance.
+    fn choose_poi_r(&mut self, x: f32, y: f32, hour: u32, sunday: bool, r: f32) -> Option<usize> {
+        let weekend = sunday || chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris).weekday().num_days_from_monday() == 5;
+        let mut cand: Vec<(usize, f32)> = vec![];
+        for _ in 0..60 {
             let k = self.rng.gen_range(0..self.pois.len().max(1));
-            let p = self.pois.get(k)?;
+            let Some(p) = self.pois.get(k) else { continue };
             let d = ((p.p[0] - x).powi(2) + (p.p[1] - y).powi(2)).sqrt();
-            if d < 1500.0 && d > 80.0 && open(&p.k, hour, sunday) {
-                return Some(k);
+            if d < r && d > 80.0 && open(&p.k, hour, sunday) {
+                let lively = 1.0 + self.liveliness.get(k).copied().unwrap_or(0.0) / 15.0;
+                cand.push((k, attract(&p.k, hour, weekend) * lively / (1.0 + d / 1500.0)));
             }
         }
-        None
+        let total: f32 = cand.iter().map(|c| c.1).sum();
+        let mut t = self.rng.gen::<f32>() * total;
+        cand.iter().find(|c| { t -= c.1; t <= 0.0 }).map(|c| c.0)
+    }
+
+    /// Keep the demonstration filled: marchers start at the head of the route in small groups, a batucada in
+    /// the middle, placards here and there; they walk it at a demonstration's pace and disperse at the end.
+    fn spawn_marchers(&mut self, now: f64) {
+        let Some(m) = &self.march else { return };
+        if now > m.until {
+            self.march = None;
+            return;
+        }
+        let route = m.route.clone();
+        let n = self.agents.iter().filter(|a| a.kind == Kind::Marcher).count();
+        if n >= 160 {
+            return;
+        }
+        for _ in 0..3 {
+            let seed: u32 = self.rng.gen();
+            let role = match self.rng.gen_range(0..100) { 0..=11 => 1u8, 12..=40 => 2, _ => 0 };
+            let label = ["manifestant", "batucada", "pancarte"][role as usize];
+            let persona = people::persona(&self.quartiers, people::PersonaInput {
+                seed, hour: self.hour, home: None, place: None, trip: people::Trip::Walk, march: Some(label) });
+            let v = self.rng.gen_range(0.7..0.95);
+            let ag = self.spawn(Kind::Marcher, route.clone(), v);
+            ag.seed = seed;
+            ag.service = role;
+            ag.persona = Some(Box::new(persona));
+        }
+    }
+
+    fn choose_poi(&mut self, x: f32, y: f32, hour: u32, sunday: bool) -> Option<usize> {
+        self.choose_poi_r(x, y, hour, sunday, 1500.0)
     }
 
     fn spawn_people(&mut self, hour: u32, weekend: bool, sunday: bool) {
@@ -534,12 +687,54 @@ impl Sim {
                 _ => {}
             }
         }
-        for _ in 0..10 {
+        let now = chrono::Utc::now().timestamp();
+        for _ in 0..6 {
             if walkers >= walkers_target || self.pois.is_empty() {
                 break;
             }
-            // from a stop (just got off) or from somewhere near a place
-            let from = if !self.stops.is_empty() && self.rng.gen_bool(0.5) {
+            // from home: a point in their sub-quartier, to a place up to 4 km away, on foot or by tram/bus/Navibus
+            let seed: u32 = self.rng.gen();
+            let mut r = SmallRng::seed_from_u64(seed as u64);
+            let Some((q, sq)) = self.quartiers.pick_home(&mut r) else { break };
+            let Some(h) = self.quartiers.random_point(&mut r, q, sq) else { continue };
+            let Some(from) = self.g.nearest(h[0], h[1], WALK, 150.0) else { continue };
+            let fp = self.g.xyz[from as usize];
+            let Some(k) = self.choose_poi_r(fp[0], fp[1], hour, sunday, 4000.0) else { continue };
+            let pp = self.pois[k].p;
+            let Some(to) = self.g.nearest(pp[0], pp[1], WALK, 60.0) else { continue };
+            let dist = ((pp[0] - fp[0]).powi(2) + (pp[1] - fp[1]).powi(2)).sqrt();
+            let ride = if dist > 1000.0 { self.transit.as_ref().and_then(|t| t.plan([fp[0], fp[1]], [pp[0], pp[1]], now)) } else { None };
+            let (path, trip) = match &ride {
+                Some(rd) => {
+                    let Some(stop) = self.g.nearest(rd.on[0], rd.on[1], WALK, 120.0) else { continue };
+                    (self.g.route(from, stop, WALK, 8000), people::Trip::Transit {
+                        line: rd.line.clone(), kind: rd.kind.clone(), from: rd.on_name.clone(), to: rd.off_name.clone() })
+                }
+                None if dist < 2200.0 => (self.g.route(from, to, WALK, 8000), people::Trip::Walk),
+                None => continue,
+            };
+            let Some(path) = path.filter(|p| p.len() >= 2) else { continue };
+            let p = &self.pois[k];
+            let name = p.t.get("name").cloned().unwrap_or_default();
+            let persona = people::persona(&self.quartiers, people::PersonaInput {
+                seed, hour, home: Some((q, sq)), place: Some((&p.k, &name)), trip, march: None });
+            let v = self.rng.gen_range(1.1..1.55) * if persona.chatty < 0.25 { 1.15 } else { 1.0 };
+            let ag = self.spawn(Kind::Walker, path, v);
+            ag.seed = seed;
+            ag.poi = Some(k);
+            ag.ride = ride;
+            ag.persona = Some(Box::new(persona));
+            walkers += 1;
+        }
+        for _ in 0..4 {
+            if walkers >= walkers_target || self.pois.is_empty() {
+                break;
+            }
+            // off a train, from a stop (just got off) or from somewhere near a place
+            let from = if let Some(sp) = self.station.filter(|_| (7..22).contains(&hour) && self.rng.gen_bool(0.3)) {
+                let Some(n) = self.random_node_near(sp[0], sp[1], 60.0, WALK) else { continue };
+                n
+            } else if !self.stops.is_empty() && self.rng.gen_bool(0.5) {
                 self.stops[self.rng.gen_range(0..self.stops.len())]
             } else {
                 let p = self.pois[self.rng.gen_range(0..self.pois.len())].p;
@@ -555,8 +750,15 @@ impl Sim {
                 continue;
             }
             let v = self.rng.gen_range(1.15..1.6);
+            let seed: u32 = self.rng.gen();
+            let p = &self.pois[k];
+            let name = p.t.get("name").cloned().unwrap_or_default();
+            let persona = people::persona(&self.quartiers, people::PersonaInput {
+                seed, hour, home: None, place: Some((&p.k, &name)), trip: people::Trip::Walk, march: None });
             let ag = self.spawn(Kind::Walker, path, v);
+            ag.seed = seed;
             ag.poi = Some(k);
+            ag.persona = Some(Box::new(persona));
             walkers += 1;
         }
         for _ in 0..4 {
@@ -573,8 +775,15 @@ impl Sim {
                 continue;
             }
             let v = self.rng.gen_range(4.0..6.0);
+            let seed: u32 = self.rng.gen();
+            let p = &self.pois[k];
+            let name = p.t.get("name").cloned().unwrap_or_default();
+            let persona = people::persona(&self.quartiers, people::PersonaInput {
+                seed, hour, home: None, place: Some((&p.k, &name)), trip: people::Trip::Bike, march: None });
             let ag = self.spawn(Kind::Bike, path, v);
+            ag.seed = seed;
             ag.poi = Some(k);
+            ag.persona = Some(Box::new(persona));
             bikes += 1;
         }
     }
@@ -601,11 +810,17 @@ impl Sim {
         let mut done = vec![];
         let mut arrivals = vec![];
         for (k, a) in self.agents.iter_mut().enumerate() {
-            if let Plan::Inside { until } = a.plan {
-                if now >= until {
-                    arrivals.push(k); // time to leave the place
+            if let Plan::Inside { until } | Plan::Waiting { until } | Plan::Riding { until } = a.plan {
+                if now >= until && now >= a.hold_until {
+                    arrivals.push(k); // time to leave the place / board / get off
                 }
                 continue;
+            }
+            if now < a.hold_until {
+                a.v = 0.0; // talking with someone
+                continue;
+            } else if a.v == 0.0 && a.kind != Kind::Car && a.kind != Kind::Emergency {
+                a.v = a.vpref;
             }
             if a.i + 1 >= a.path.len() {
                 arrivals.push(k);
@@ -647,7 +862,34 @@ impl Sim {
             let hour_rng: f64 = self.rng.gen_range(300.0..2400.0);
             let a = &mut self.agents[k];
             match (a.kind, a.plan) {
-                (Kind::Car, _) | (Kind::Emergency, _) => done.push(k),
+                (Kind::Car, _) | (Kind::Emergency, _) | (Kind::Marcher, _) => done.push(k),
+                (_, Plan::Going) if a.ride.is_some() && a.poi.is_some() => {
+                    // at the stop: wait for the tram/bus/Navibus
+                    let dep = a.ride.as_ref().map(|r| r.dep).unwrap_or(0) as f64;
+                    a.plan = Plan::Waiting { until: dep.max(now) };
+                }
+                (_, Plan::Waiting { .. }) => {
+                    let arr = a.ride.as_ref().map(|r| r.arr).unwrap_or(0) as f64;
+                    a.plan = Plan::Riding { until: arr.max(now + 30.0) };
+                }
+                (_, Plan::Riding { .. }) => {
+                    // off at their stop: walk the rest of the way
+                    let rd = a.ride.take().unwrap();
+                    let dest = a.poi.and_then(|k| self.pois.get(k)).and_then(|p| g.nearest(p.p[0], p.p[1], WALK, 60.0));
+                    let from = g.nearest(rd.off[0], rd.off[1], WALK, 150.0);
+                    match (from, dest) {
+                        (Some(f), Some(t)) => match g.route(f, t, WALK, 8000) {
+                            Some(p) if p.len() >= 2 => {
+                                a.path = p;
+                                a.i = 0;
+                                a.s = 0.0;
+                                a.plan = Plan::Going;
+                            }
+                            _ => done.push(k),
+                        },
+                        _ => done.push(k),
+                    }
+                }
                 (_, Plan::Going) if a.poi.is_some() => a.plan = Plan::Inside { until: now + hour_rng },
                 (_, Plan::Inside { .. }) => {
                     // walk to the nearest stop (walkers) or ride away and vanish
@@ -689,7 +931,9 @@ impl Sim {
         let wd = t.weekday().num_days_from_monday();
         self.spawn_cars();
         self.spawn_emergency();
+        self.hour = t.hour();
         self.spawn_people(t.hour(), wd >= 5, wd == 6);
+        self.spawn_marchers(t.timestamp() as f64);
     }
 
     pub fn snapshot(&self, now: f64) -> Snapshot {
@@ -697,26 +941,89 @@ impl Sim {
         let items = self
             .agents
             .iter()
-            .filter(|a| !matches!(a.plan, Plan::Inside { .. }) && a.i + 1 < a.path.len())
+            .filter(|a| !matches!(a.plan, Plan::Inside { .. } | Plan::Riding { .. }) && a.path.len() >= 2
+                && (a.i + 1 < a.path.len() || matches!(a.plan, Plan::Waiting { .. })))
             .map(|a| {
-                let (pa, pb) = (g.xyz[a.path[a.i] as usize], g.xyz[a.path[a.i + 1] as usize]);
+                let i = a.i.min(a.path.len() - 2);
+                let (pa, pb) = (g.xyz[a.path[i] as usize], g.xyz[a.path[i + 1] as usize]);
                 let len = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2)).sqrt().max(0.01);
-                let f = (a.s / len).min(1.0);
+                let f = if a.i + 1 >= a.path.len() { 1.0 } else { (a.s / len).min(1.0) };
                 let (dx, dy) = ((pb[0] - pa[0]) / len, (pb[1] - pa[1]) / len);
                 // cars keep right of the centre line, people walk on the pavement
                 let side = match a.kind {
                     Kind::Car | Kind::Emergency => 1.7,
                     Kind::Walker => 4.5 + (a.seed % 3) as f32 * 0.6,
+                    Kind::Marcher => (a.seed % 13) as f32 - 6.0, // the whole street
                     Kind::Bike => 2.6,
                 };
                 let x = pa[0] + (pb[0] - pa[0]) * f + dy * side;
                 let y = pa[1] + (pb[1] - pa[1]) * f - dx * side;
                 let z = pa[2] + (pb[2] - pa[2]) * f;
-                let variant = if a.kind == Kind::Emergency { a.service + 4 * a.siren as u8 } else { (a.seed >> 8) as u8 };
-                (a.id, a.kind as u8, x, y, z, dy.atan2(dx), a.v, variant)
+                let variant = match a.kind {
+                    Kind::Emergency => a.service + 4 * a.siren as u8,
+                    Kind::Marcher => a.service + 4 * ((a.seed >> 8) as u8 % 60),
+                    _ => (a.seed >> 8) as u8,
+                };
+                let heading = if now < a.hold_until { a.face } else { dy.atan2(dx) };
+                (a.id, a.kind as u8, x, y, z, heading, if now < a.hold_until { 0.0 } else { a.v }, variant)
             })
             .collect();
         Snapshot { at: now, items }
+    }
+
+    /// For a conversation: the persona, where they are, what they are doing, and the places around.
+    pub fn talk_context(&self, id: u32) -> Option<(Persona, [f32; 3], String, Vec<String>)> {
+        let a = self.agents.iter().find(|a| a.id == id)?;
+        let p = a.persona.as_deref()?.clone();
+        let here = self.position(a);
+        let doing = self.describe(id).and_then(|v| v["doing"].as_str().map(String::from)).unwrap_or_default();
+        let mut near: Vec<(f32, String)> = self.pois.iter().filter_map(|q| {
+            let d = ((q.p[0] - here[0]).powi(2) + (q.p[1] - here[1]).powi(2)).sqrt();
+            let name = q.t.get("name")?;
+            (d < 500.0).then(|| {
+                let what = q.t.get("cuisine").map(|c| format!("{}, {c}", q.k)).unwrap_or_else(|| q.k.clone());
+                (d, format!("{name} ({what}, à {} m)", (d / 10.0).round() * 10.0))
+            })
+        }).collect();
+        near.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(Ordering::Equal));
+        let near = near.into_iter().take(25).map(|x| x.1).collect();
+        Some((p, here, doing, near))
+    }
+
+    /// The quartier and sub-quartier names at a point.
+    pub fn place_names(&self, x: f32, y: f32) -> (Option<String>, Option<String>) {
+        match self.quartiers.at(x, y) {
+            Some((q, s)) => {
+                let qq = &self.quartiers.quartiers[q];
+                (Some(qq.name.clone()), s.map(|s| qq.subs[s].name.clone()))
+            }
+            None => (None, None),
+        }
+    }
+
+    /// Stop `id` for a talk until `until`, turned towards (x, y). False if they can't (gone, on board).
+    pub fn hold(&mut self, id: u32, until: f64, x: f32, y: f32) -> bool {
+        let Some(k) = self.agents.iter().position(|a| a.id == id) else { return false };
+        if matches!(self.agents[k].plan, Plan::Riding { .. } | Plan::Inside { .. }) {
+            return false;
+        }
+        let here = self.position(&self.agents[k]);
+        let a = &mut self.agents[k];
+        a.hold_until = until;
+        a.face = (y - here[1]).atan2(x - here[0]);
+        true
+    }
+
+    fn position(&self, a: &Agent) -> [f32; 3] {
+        let g = &self.g;
+        if a.path.len() < 2 {
+            return a.path.first().map(|&n| g.xyz[n as usize]).unwrap_or([0.0; 3]);
+        }
+        let i = a.i.min(a.path.len() - 2);
+        let (pa, pb) = (g.xyz[a.path[i] as usize], g.xyz[a.path[i + 1] as usize]);
+        let len = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2)).sqrt().max(0.01);
+        let f = if a.i + 1 >= a.path.len() { 1.0 } else { (a.s / len).min(1.0) };
+        [pa[0] + (pb[0] - pa[0]) * f, pa[1] + (pb[1] - pa[1]) * f, pa[2] + (pb[2] - pa[2]) * f]
     }
 
     pub fn describe(&self, id: u32) -> Option<serde_json::Value> {
@@ -738,14 +1045,29 @@ impl Sim {
             (_, Plan::Going) => place.as_ref().map(|n| format!("se rend à {n}")).unwrap_or_else(|| "se promène".into()),
             (_, Plan::Inside { .. }) => place.as_ref().map(|n| format!("est à {n}")).unwrap_or_default(),
             (_, Plan::Leaving) => "rentre".to_string(),
+            (_, Plan::Waiting { .. }) => a.ride.as_ref().map(|r| format!("attend le {} {} à {}", r.kind, r.line, r.on_name)).unwrap_or_default(),
+            (_, Plan::Riding { .. }) => a.ride.as_ref().map(|r| format!("dans le {} {}, descend à {}", r.kind, r.line, r.off_name)).unwrap_or_default(),
+        };
+        let what = match (&a.persona, a.kind) {
+            (Some(p), Kind::Marcher) => format!("manifeste ({})", p.march.as_deref().unwrap_or("")),
+            _ => what,
         };
         let kind = match a.kind {
             Kind::Emergency => ["ambulance", "police", "pompiers"][a.service as usize % 3],
+            Kind::Marcher => "walker",
             k => ["car", "walker", "bike"][k as usize],
         };
+        let p = a.persona.as_deref();
         Some(serde_json::json!({
-            "id": a.id, "kind": kind, "name": name_of(a.seed),
+            "id": a.id, "kind": kind, "name": p.map(|p| p.first.clone()).unwrap_or_else(|| name_of(a.seed).to_string()),
             "doing": what, "place": poi.map(|p| &p.id), "speed": a.v,
+            "persona": p.map(|p| serde_json::json!({
+                "name": p.full_name(), "age": p.age, "job": p.job, "quartier": p.quartier, "sub": p.sub,
+                "purpose": p.purpose, "destination": p.destination, "trip": p.trip_text(),
+                "story": p.story, "chatty": p.chatty, "mood": p.mood, "archetype": p.archetype.as_ref().map(|a| &a.0),
+                "march": p.march,
+            })),
+            "march": if a.kind == Kind::Marcher { self.marching() } else { None },
         }))
     }
 }
@@ -806,5 +1128,12 @@ pub fn build(web: &Path) -> Result<Sim> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    Ok(Sim::new(g, pois, &st, &bases))
+    let mut s = Sim::new(g, pois, &st, &bases);
+    s.set_quartiers(Quartiers::load(web));
+    if let Some(p) = std::fs::read(web.join("data/world/rails.json")).ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| Some([v["station"][0].as_f64()? as f32, v["station"][1].as_f64()? as f32])) {
+        s.set_station(p);
+    }
+    Ok(s)
 }

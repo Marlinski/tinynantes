@@ -15,12 +15,15 @@ mod feeds;
 mod gtfs;
 mod l93;
 mod menus;
+mod news;
+mod people;
 mod planes;
 mod players;
 mod rt;
 mod sim;
 mod sncf;
 mod store;
+mod talk;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -98,6 +101,8 @@ struct App {
     menus: Arc<menus::Fetcher>,
     /// places of the map (pois.json): id -> (name, kind, website)
     pois: Arc<HashMap<String, (String, String, Option<String>)>>,
+    news: Arc<RwLock<news::News>>,
+    talker: Arc<talk::Talker>,
 }
 
 fn now() -> i64 {
@@ -174,6 +179,9 @@ async fn main() -> anyhow::Result<()> {
         RwLock::new(c)
     };
     let (traffic0, events0, weather0) = (restore("traffic"), restore("events"), restore("weather"));
+    let talker = Arc::new(talk::Talker::new(
+        reqwest::Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(90)).build()?,
+        &data.join("tinynantes.db"))?);
     let app = Arc::new(App {
         store: store.clone(),
         http,
@@ -191,6 +199,8 @@ async fn main() -> anyhow::Result<()> {
         sncf_delays: Default::default(),
         menus: Arc::new(menus::Fetcher::new()?),
         pois: Arc::new(load_pois(&web)),
+        news: Default::default(),
+        talker,
     });
     let players = players::open(&app.data.join("tinynantes.db"))?;
 
@@ -203,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(places_loop(store.clone()));
     tokio::spawn(menus_nightly(app.clone()));
     tokio::spawn(sncf_loop(app.clone()));
+    tokio::spawn(news::run(app.http.clone(), app.news.clone()));
     let web2 = web.clone();
     let sim = tokio::task::spawn_blocking(move || sim::build(&web2)).await??;
     let world = sim::World::new(sim);
@@ -223,12 +234,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/places/search", get(places_search))
         .route("/api/places/menus", get(places_menus))
         .route("/healthz", get(|| async { "ok\n" }))
-        .with_state(app);
+        .with_state(app.clone());
     let social = Router::new()
         .route("/api/auth/login", post(players::login))
         .route("/api/ws", get(players::ws))
         .route("/api/chat/recent", get(players::recent))
-        .with_state(players);
+        .with_state(players.clone());
+    let talking = Router::new()
+        .route("/api/talk", post(talk_h))
+        .route("/api/talk/end", post(talk_end))
+        .route("/api/news", get(news_h))
+        .with_state(TalkState { app: app.clone(), world: world.clone(), players: players.clone() });
     let living = Router::new()
         .route("/api/world", get(world_ws))
         .route("/api/agent/:id", get(agent))
@@ -236,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
     let router = api
         .merge(social)
         .merge(living)
+        .merge(talking)
         .fallback_service(ServeDir::new(&web).append_index_html_on_directories(true))
         .layer(middleware::from_fn(cache_headers))
         .layer(CompressionLayer::new());
@@ -633,7 +650,51 @@ async fn places_loop(st: Arc<store::Store>) {
 
 /// Feed the simulation with the measured traffic and the weather, every minute.
 async fn sim_inputs(app: Arc<App>, w: Arc<sim::World>) {
+    #[derive(serde::Deserialize)]
+    struct TransitFile {
+        routes: Vec<people::RouteIn>,
+        shapes: HashMap<String, people::ShapeIn>,
+    }
+    let tf: Option<Arc<TransitFile>> = std::fs::read(app.web.join("data/world/transit.json")).ok()
+        .and_then(|b| serde_json::from_slice(&b).ok()).map(Arc::new);
+    let stations: Vec<(String, [f32; 2])> = std::fs::read(app.web.join("data/world/transit.json")).ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .map(|v| v["stations"].as_array().cloned().unwrap_or_default().iter().filter_map(|s| {
+            Some((s["name"].as_str()?.to_string(), [s["p"][0].as_f64()? as f32, s["p"][1].as_f64()? as f32]))
+        }).collect()).unwrap_or_default();
+    // a demonstration's usual route: Commerce, cours des 50-Otages, rue de Strasbourg, the château, Bouffay
+    let route: Vec<[f32; 2]> = ["Commerce", "50 Otages", "Cirque - Marais", "St-Pierre", "Duchesse Anne - Château", "Bouffay", "Commerce"]
+        .iter().filter_map(|n| stations.iter().find(|s| s.0 == *n).map(|s| s.1)).collect();
+    let mut built: Option<chrono::NaiveDate> = None;
     loop {
+        // today's timetable, indexed for the inhabitants' trips
+        let tt = app.timetable.read().await.value.clone();
+        if let (Some(tt), Some(tf)) = (tt, tf.clone()) {
+            if built != Some(tt.date) {
+                built = Some(tt.date);
+                if let Ok(ix) = tokio::task::spawn_blocking(move || people::TransitIndex::build(tt, &tf.shapes, &tf.routes)).await {
+                    w.sim.write().await.set_transit(Arc::new(ix));
+                    tracing::info!("sim: transit index ready");
+                }
+            }
+        }
+        // a demonstration: announced for today in the local news (weekend afternoons), or forced for testing
+        let paris = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris);
+        use chrono::{Datelike, Timelike};
+        let weekend = paris.weekday().num_days_from_monday() >= 5;
+        let forced = std::env::var("TN_FORCE_MARCH").ok().filter(|v| !v.is_empty());
+        let announced = app.news.read().await.march.clone();
+        let march = match (forced, announced) {
+            (Some(m), _) => Some((m, now() as f64 + 3600.0)),
+            (None, Some(m)) if weekend && (14..18).contains(&paris.hour()) => {
+                let end = paris.date_naive().and_hms_opt(17, 45, 0).and_then(|d| d.and_local_timezone(chrono_tz::Europe::Paris).single());
+                Some((m, end.map(|e| e.timestamp() as f64).unwrap_or(now() as f64 + 3600.0)))
+            }
+            _ => None,
+        };
+        if route.len() >= 3 {
+            w.sim.write().await.set_march(march.map(|(m, until)| (m, route.clone(), until)));
+        }
         let sections: Vec<sim::SectionIn> = app.traffic.read().await.value.as_ref()
             .and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default();
         let rain = app.weather.read().await.value.as_ref()
@@ -696,6 +757,117 @@ async fn world_conn(ws: axum::extract::ws::WebSocket, w: Arc<sim::World>) {
 }
 
 /// GET /api/agent/:id -> who this inhabitant is and what they are doing
+// ---------------------------------------------------------------- talking with the sims
+
+#[derive(Clone)]
+struct TalkState {
+    app: Arc<App>,
+    world: Arc<sim::World>,
+    players: Arc<players::Players>,
+}
+
+#[derive(serde::Deserialize)]
+struct TalkIn {
+    token: String,
+    id: u32,
+    #[serde(default)]
+    text: String,
+}
+
+/// POST /api/talk {token, id, text}: say something to inhabitant `id` (empty text: walk up to them). The player
+/// must be signed in and standing next to them; they stop and face the player while the talk lasts.
+async fn talk_h(State(t): State<TalkState>, axum::Json(q): axum::Json<TalkIn>) -> Response {
+    let bad = |c: StatusCode, m: &str| (c, axum::Json(serde_json::json!({ "error": m }))).into_response();
+    let Some(player) = t.players.name_of(&q.token) else { return bad(StatusCode::UNAUTHORIZED, "connecte-toi d'abord") };
+    if t.app.talker.limited(&player) {
+        return bad(StatusCode::TOO_MANY_REQUESTS, "doucement, laisse-les respirer un peu");
+    }
+    let pos = t.players.position_of(&player).await;
+    let scene = {
+        let mut s = t.world.sim.write().await;
+        let Some((persona, here, doing, near)) = s.talk_context(q.id) else { return bad(StatusCode::NOT_FOUND, "personne ici") };
+        if let Some((px, py)) = pos {
+            if ((px as f32 - here[0]).powi(2) + (py as f32 - here[1]).powi(2)).sqrt() > 25.0 {
+                return bad(StatusCode::CONFLICT, "approche-toi d'abord");
+            }
+        }
+        let (px, py) = pos.map(|p| (p.0 as f32, p.1 as f32)).unwrap_or((here[0] + 1.0, here[1]));
+        let at = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        if !s.hold(q.id, at + 90.0, px, py) {
+            return bad(StatusCode::CONFLICT, "pas disponible");
+        }
+        let names = s.place_names(here[0], here[1]);
+        let march = s.marching().map(String::from);
+        (persona, doing, names, near, march)
+    };
+    let (persona, doing, here, near, march) = scene;
+    let news: Vec<String> = t.app.news.read().await.items.iter().take(10).map(|i| format!("{} ({})", i.title, i.source)).collect();
+    let events: Vec<String> = t.app.events.read().await.value.as_ref()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        .map(|v| upcoming(&v)).unwrap_or_default();
+    let weather = t.app.weather.read().await.value.as_ref()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        .map(|v| format!("{:.0} °C, {}", v["current"]["temperature_2m"].as_f64().unwrap_or(12.0),
+                         sky(v["current"]["weather_code"].as_i64().unwrap_or(0))))
+        .unwrap_or_else(|| "inconnue".into());
+    let scene = talk::Scene { persona, doing, here, near, events, news, weather, march };
+    match t.app.talker.say(&player, q.id, &q.text, scene).await {
+        Ok(r) => {
+            if r.ended {
+                let at = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+                t.world.sim.write().await.hold(q.id, at + 2.0, 0.0, 0.0);
+            }
+            axum::Json(r).into_response()
+        }
+        Err(e) => bad(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+    }
+}
+
+/// POST /api/talk/end {token, id}: the player walks away; the inhabitant goes on.
+async fn talk_end(State(t): State<TalkState>, axum::Json(q): axum::Json<TalkIn>) -> Response {
+    if let Some(player) = t.players.name_of(&q.token) {
+        t.app.talker.end(&player, q.id);
+        let at = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        let mut s = t.world.sim.write().await;
+        if let Some((_, here, _, _)) = s.talk_context(q.id) {
+            s.hold(q.id, at, here[0], here[1]);
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// GET /api/news: the light headlines the sims chat about, and a demonstration if one is announced today.
+async fn news_h(State(t): State<TalkState>) -> Response {
+    let n = t.app.news.read().await;
+    axum::Json(serde_json::json!({ "items": n.items, "march": n.march, "marching": t.world.sim.read().await.marching(),
+                                    "llm": t.app.talker.llm(), "updated": n.updated })).into_response()
+}
+
+fn sky(code: i64) -> &'static str {
+    match code {
+        0 => "grand soleil",
+        1..=3 => "quelques nuages",
+        45 | 48 => "brouillard",
+        51..=57 => "bruine",
+        61..=67 | 80..=82 => "pluie",
+        71..=77 | 85 | 86 => "neige",
+        95..=99 => "orage",
+        _ => "temps gris",
+    }
+}
+
+/// The next events from the events feed, as short lines.
+fn upcoming(v: &serde_json::Value) -> Vec<String> {
+    let list = v.get("items").or(Some(v)).and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    list.iter().take(12).filter_map(|e| {
+        let name = e.get("name").or(e.get("title")).and_then(|x| x.as_str())?;
+        let place = e.get("place").or(e.get("lieu")).and_then(|x| x.as_str()).unwrap_or("");
+        let when = e.get("date").or(e.get("start")).and_then(|x| x.as_str()).unwrap_or("");
+        Some(format!("{name}{}{}", if place.is_empty() { String::new() } else { format!(", {place}") },
+                     if when.is_empty() { String::new() } else { format!(" ({when})") }))
+    }).collect()
+}
+
 async fn agent(State(w): State<Arc<sim::World>>, UrlPath(id): UrlPath<u32>) -> Response {
     match w.sim.read().await.describe(id) {
         Some(v) => json(Bytes::from(v.to_string())),

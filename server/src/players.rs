@@ -49,6 +49,19 @@ pub struct Player {
     pub seen: Option<Instant>,
 }
 
+impl Players {
+    /// The name behind a session token.
+    pub fn name_of(&self, token: &str) -> Option<String> {
+        self.db.lock().unwrap()
+            .query_row("SELECT name FROM sessions WHERE token = ?1", params![token], |r| r.get(0))
+            .optional().unwrap_or(None)
+    }
+    /// Where a player who is online stands (world metres).
+    pub async fn position_of(&self, name: &str) -> Option<(f64, f64)> {
+        self.online.read().await.values().find(|q| q.name == name).map(|q| (q.x, q.y))
+    }
+}
+
 pub fn open(path: &std::path::Path) -> Result<Arc<Players>> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;

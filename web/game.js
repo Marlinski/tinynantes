@@ -29,7 +29,7 @@ window.TNGame = { me, others, navAt, walkable };       // for debugging from the
 
 // ---------------------------------------------------------------- side panel
 const side = $("side"), sideBody = $("sideBody");
-$("sideClose").onclick = () => closeSide();
+$("sideClose").onclick = () => (talking ? closeTalk() : closeSide());
 function openSide(html) { sideBody.innerHTML = html; side.hidden = false; side.scrollTop = 0; }
 function closeSide() { side.hidden = true; sideBody.innerHTML = ""; sideBody.dataset.poi = ""; }
 const hm = (t) => new Date(t * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
@@ -56,10 +56,20 @@ live.open = async (kind, d) => {
     try { a = await getJSON(`api/agent/${d.id}`); } catch { /* gone */ }
     if (!a) return;
     const icon = { car: "🚗", walker: "🚶", bike: "🚲", ambulance: "🚑", police: "🚓", pompiers: "🚒" }[a.kind];
-    const who = { ambulance: "Ambulance", police: "Police", pompiers: "Pompiers" }[a.kind] || "Habitant·e";
-    openSide(`<p class="kicker">${icon} ${who}</p><h2>${esc(a.name)}</h2><p>${esc(a.doing)}</p>
+    const who = { ambulance: "Ambulance", police: "Police", pompiers: "Pompiers" }[a.kind] || "Habitant·e (PNJ)";
+    const P = a.persona;
+    const near = P && TN.playing && session && nearestSim(12)?.id === a.id;
+    openSide(`<p class="kicker">${icon} ${who}</p><h2>${esc(P ? P.name : a.name)}</h2>
+      ${P ? `<p>${P.age} ans · ${esc(P.job)}${P.archetype ? ` · <i>${esc(P.archetype)}</i>` : ""}<br>
+        Habite ${esc(P.sub ? `${P.sub} (${P.quartier})` : P.quartier)}</p>` : ""}
+      <p>${esc(a.doing)}</p>
+      ${P ? `<p><b>Sortie :</b> ${esc(P.purpose)}<br><b>Trajet :</b> ${esc(P.trip)}<br>
+        <b>Humeur :</b> ${esc(P.mood)} · ${P.chatty < 0.3 ? "pressé·e" : P.chatty > 0.7 ? "bavard·e" : "poli·e"}</p>` : ""}
+      ${a.march ? `<p>✊ ${esc(a.march)}</p>` : ""}
+      ${near ? `<button class="act" id="talkBtn">Parler (E)</button>` : P && TN.playing ? `<p class="src">Approche-toi pour lui parler (E).</p>` : ""}
       ${a.place ? `<p><a href="#" id="agentPlace">Voir le lieu</a></p>` : ""}
-      <p class="src">Simulé par le serveur : la circulation suit les comptages réels, les passants vont vers des lieux ouverts à cette heure.</p>`);
+      <p class="src">Personnage non joueur, simulé par le serveur ; ses paroles sont générées par une IA.</p>`);
+    if (near) $("talkBtn").onclick = () => openTalk(a.id);
     const pl = a.place && live.world.pois.find((p) => p.id === a.place);
     if (pl) $("agentPlace").onclick = (e) => { e.preventDefault(); live.open("poi", pl); };
   } else if (kind === "train") {
@@ -379,7 +389,7 @@ $("chatForm").onsubmit = (e) => {
 addEventListener("keydown", (e) => {
   if (!TN.playing || e.target.tagName === "INPUT") return;
   if (e.code === "Enter" || e.code === "KeyT") { e.preventDefault(); $("chatIn").focus(); return; }
-  if (e.code === "Escape") { if (!side.hidden) closeSide(); else stopPlaying(); return; }
+  if (e.code === "Escape") { if (talking) closeTalk(); else if (!side.hidden) closeSide(); else stopPlaying(); return; }
   if (e.code === "KeyE" || e.code === "KeyF") { action(); return; }
   if (e.code === "Digit1") setMode("walk");
   else if (e.code === "Digit2") setMode("bike");
@@ -603,7 +613,68 @@ live.layers.push(() => {
   });
 });
 
-// E: get on / off transit, or go into the place in front of you
+// ---------------------------------------------------------------- talking with the inhabitants (PNJ)
+function nearestSim(r = 6) {
+  let best = null, bd = r;
+  for (const [id, k, x, y] of live.people) {
+    if (k !== 1 && k !== 2 && k !== 4) continue;
+    const d = Math.hypot(x - me.x, y - me.y);
+    if (d < bd) { bd = d; best = { id, k, x, y }; }
+  }
+  return best;
+}
+let talking = null;                         // { id, name, busy }
+async function openTalk(id) {
+  if (!session) return toast("Connecte-toi pour parler aux habitants");
+  talking = { id, name: "", busy: true };
+  openSide(`<p class="kicker">💬 Conversation</p><h2 id="talkWho">…</h2><div class="talk" id="talkLog"></div>
+    <form id="talkForm" class="talkform"><input id="talkIn" maxlength="400" placeholder="Dis quelque chose…" autocomplete="off">
+    <button class="act">Dire</button></form>
+    <p class="src">Personnage non joueur ; ses répliques sont générées par une IA. <kbd>Échap</kbd> pour partir.</p>`);
+  sideBody.dataset.talk = "1";
+  $("talkForm").onsubmit = (e) => { e.preventDefault(); const t = $("talkIn").value.trim(); if (t) { $("talkIn").value = ""; talkSay(t); } };
+  $("talkIn").addEventListener("keydown", (e) => { if (e.code === "Escape") { e.preventDefault(); closeTalk(); } });
+  await talkSay("");
+  $("talkIn")?.focus();
+}
+function talkLine(who, text, cls) {
+  const log = $("talkLog"); if (!log) return;
+  const p = document.createElement("p"); p.className = cls;
+  p.innerHTML = `<b>${esc(who)}</b> ${esc(text)}`; log.appendChild(p); log.scrollTop = log.scrollHeight;
+}
+async function talkSay(text) {
+  if (!talking) return;
+  const t = talking;
+  if (text) talkLine("Toi :", text, "me");
+  t.busy = true; $("talkIn") && ($("talkIn").disabled = true);
+  try {
+    const r = await fetch("api/talk", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: session.token, id: t.id, text }) });
+    const d = await r.json();
+    if (!r.ok) { talkLine("", d.error || "…", "sys"); if (r.status !== 429) talking = null; return; }
+    t.name = d.name; if ($("talkWho")) $("talkWho").textContent = d.name;
+    talkLine(`${d.name.split(" ")[0]} :`, d.text, "them");
+    if (d.ended) { talkLine("", `${d.name.split(" ")[0]} s'en va.`, "sys"); talking = null; $("talkForm")?.remove(); }
+  } catch { talkLine("", "…pas de réponse.", "sys"); }
+  finally { t.busy = false; if ($("talkIn")) { $("talkIn").disabled = false; $("talkIn").focus(); } }
+}
+function closeTalk() {
+  if (talking && session) fetch("api/talk/end", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: session.token, id: talking.id }) }).catch(() => {});
+  talking = null; delete sideBody.dataset.talk; closeSide();
+}
+// walking away ends the conversation
+setInterval(() => {
+  if (!TN.playing) return;
+  if (talking) {
+    const p = live.people.find((q) => q[0] === talking.id);
+    if (!p || Math.hypot(p[2] - me.x, p[3] - me.y) > 30) closeTalk();
+  }
+  const h = $("talkHint"), s = !talking && !me.ride && nearestSim();
+  if (h) h.hidden = !s;
+}, 400);
+
+// E: get on / off transit, talk to someone, or go into the place in front of you
 function action() {
   const t = live.now();
   if (me.ride) {
@@ -627,6 +698,9 @@ function action() {
       toast(`Tu montes : ${r.short || ""} → ${best.v.headsign}`); hud(); return;
     }
   }
+  // someone right next to you: talk
+  const sim = nearestSim();
+  if (sim && !room) { openTalk(sim.id); return; }
   // places: the closest one within reach
   const bp = nearestPlace(me.x, me.y, REACH + 4);
   if (room) { live.open("poi", live.world.pois.find((q) => q.id === room.id)); return; }
@@ -832,9 +906,15 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   items.push({ sx, sy, overlay: true, draw: () => {
     const [cx, cy] = live.toCanvas(...live.project(x, y, z + (mode === "heli" ? 7.5 : 2.2 * K)));
     const ctx = document.getElementById("live").getContext("2d");
-    ctx.font = `600 ${11 * TN.dpr}px Geist, system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-    ctx.lineWidth = 3 * TN.dpr; ctx.strokeStyle = "rgba(20,24,28,.85)"; ctx.strokeText(name, cx, cy);
-    ctx.fillStyle = isMe ? "#f2b544" : "#fff"; ctx.fillText(name, cx, cy); ctx.textAlign = "start";
+    // humans are marked: a name pill and a diamond above the head (the inhabitants, PNJ, have neither)
+    const D = TN.dpr;
+    ctx.font = `600 ${11 * D}px Geist, system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const w = ctx.measureText(name).width + 12 * D, hgt = 16 * D, top = cy - hgt - 6 * D;
+    ctx.fillStyle = isMe ? "#f2b544" : "#3d7be0";
+    ctx.beginPath(); ctx.roundRect?.(cx - w / 2, top, w, hgt, 8 * D); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx - 5 * D, top + hgt); ctx.lineTo(cx + 5 * D, top + hgt); ctx.lineTo(cx, top + hgt + 6 * D); ctx.fill();
+    ctx.fillStyle = isMe ? "#1d1a12" : "#fff"; ctx.fillText(name, cx, top + hgt / 2 + 0.5 * D);
+    ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
     if (o.bubble && performance.now() < o.bubble.until) live.label(cx, cy - 16 * TN.dpr, wrap(o.bubble.text, 34).slice(0, 4), "rgba(20,24,28,.92)");
   } });
   return items;

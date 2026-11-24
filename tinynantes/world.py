@@ -765,6 +765,142 @@ def water():
           f"{len(moored)} moored ships, {len(out_yards)} yards")
 
 
+# ---------------------------------------------------------------- neighbourhoods (for the sims' stories)
+
+# What each of Nantes' eleven quartiers is like, for the sims who live there (written by hand; the sims'
+# jobs are drawn from `jobs`, weights summing to anything).
+QUARTIER_PROFILES = {
+    "Centre Ville": ("cœur historique : château, Bouffay, Graslin, commerces, bars, beaucoup d'étudiants et de touristes",
+                     {"étudiant": 4, "serveur": 2, "commerçant": 2, "cadre": 2, "artiste": 1, "guide": 1, "retraité": 2, "historien": 1}),
+    "Île de Nantes": ("ancienne île des chantiers navals devenue quartier de la création : Machines de l'île, Hangar à Bananes, école d'archi, Halles 1&2, startups",
+                      {"architecte": 2, "designer": 2, "étudiant": 3, "développeur": 2, "artiste": 2, "chercheur": 1, "cadre": 1}),
+    "Hauts-Pavés - Saint-Félix": ("quartier résidentiel bourgeois, maisons nantaises, bords de l'Erdre, familles",
+                                   {"cadre": 3, "médecin": 1, "enseignant": 2, "retraité": 3, "avocat": 1, "étudiant": 1}),
+    "Malakoff - Saint-Donatien": ("de la cité Malakoff rénovée au vieux Saint-Donatien et au Jardin des plantes, près de la gare",
+                                  {"employé": 3, "étudiant": 2, "infirmier": 2, "cheminot": 1, "enseignant": 2, "retraité": 2}),
+    "Breil - Barberie": ("quartier familial au nord-ouest, grands ensembles et pavillons, parc de la Gaudinière",
+                         {"employé": 3, "ouvrier": 2, "enseignant": 1, "retraité": 3, "étudiant": 1, "aide-soignant": 2}),
+    "Nantes Nord": ("campus du Tertre et de la Lombarderie, Petit Port, cités du nord, beaucoup d'étudiants et d'universitaires",
+                    {"étudiant": 5, "universitaire": 3, "chercheur": 2, "employé": 2, "retraité": 1}),
+    "Nantes Erdre": ("Beaujoire, parc floral, stade du FC Nantes, Erdre, quartiers résidentiels et Ranzay",
+                     {"employé": 3, "cadre": 2, "retraité": 3, "sportif": 1, "jardinier": 1, "enseignant": 1}),
+    "Doulon - Bottière": ("ancien bourg de Doulon, Bottière, pavillons et cités, maraîchers d'autrefois",
+                          {"employé": 3, "ouvrier": 2, "retraité": 3, "aide-soignant": 2, "artisan": 2}),
+    "Nantes Sud": ("Saint-Jacques, Pirmil, Sèvre, Clos Toreau, quartier calme au sud de la Loire",
+                   {"employé": 3, "retraité": 3, "infirmier": 2, "enseignant": 2, "artisan": 1}),
+    "Dervallières - Zola": ("de la place Zola au grand ensemble des Dervallières, parc de Procé, Chézine",
+                            {"employé": 3, "enseignant": 2, "étudiant": 2, "retraité": 2, "artiste": 1, "ouvrier": 1}),
+    "Bellevue - Chantenay - Sainte-Anne": ("ancien quartier ouvrier des conserveries et des chantiers, butte Sainte-Anne, vue sur la Loire, Bellevue",
+                                           {"ouvrier": 2, "artisan": 2, "employé": 2, "artiste": 2, "retraité": 3, "historien": 1, "docker": 1}),
+    "Saint-Herblain": ("commune voisine : Atlantis, Zénith, Onyx, la Gournerie, Bellevue côté herblinois, zones d'activités",
+                       {"employé": 4, "commerçant": 2, "cadre": 2, "ouvrier": 2, "retraité": 2, "étudiant": 1}),
+    "Bouguenais": ("au sud de la Loire : l'aéroport Nantes Atlantique, Airbus, Port-Lavigne et la campagne",
+                   {"technicien aéronautique": 3, "employé": 2, "agriculteur": 1, "retraité": 2, "pilote": 1}),
+}
+
+# Hoodmaps tags kept (read one by one): the rest of the crowd's tags are slurs, crimes or deaths, which the sims
+# never repeat. Source: https://hoodmaps.com/nantes-neighborhood-map (crowd opinion, not fact).
+HOOD_OK = {
+    "Giant Animals", "Rond point carré pas pratique", "Cours des 50 manifs", "Le Montmartre nantais",
+    "Village de pêcheurs millionnaires", "Rich people’s garden", "Free fun with goats", "Not a Mountain",
+    "Cheap copy of Burning Man", "Free castle visit", "Inspecteur Gadget à l'accordéon", "tt le monde gruge a ce RU",
+    "Nice park", "L'Anomalie du Périph'", "Uber eats parking", "highest view of nantes", "99% de la richesse nantaise",
+    "bâtiment neuf déjà moche", "Not for colorblinds!", "Vous n'avez rien à faire là en voiture", "Best fauteuils de ciné",
+    "Extraordinary garden", "Future hospital", "rue des cyclistes", "FC Nantes RPZ", "big pataugeoire",
+    "The largest shopping mall in Nantes", "Kebab Street", "cool drinking spot", "best boulangerie  et bourgeoisie",
+    "covoit zone", "Tricky curve for Bicloo (bike)", "Ragondins 😍", "Moutons", "Des joggeurs et encore des joggeurs",
+    "Les bouchons", "Qui se souvient encore de l'Olympic ?", "BEST BURGERS 🍔", "Fireworks every week",
+    "Meilleur bar à bières", "piste aux gros oiseaux", "La plus belle mairie de Nantes", "Cool place for running",
+    "N a de château que le nom", "Quai des bouchons", "Gros gros richous", "Bar à jeux sympa",
+    "Entrée de l'autoroute du vélo", "rue des kebabs", "Skatepark  bowl and pull-up bars", "Le cheval le cheval c'est génial",
+    "not a place to swim in", "THE best pizzas !!", "Apérooooo !!!!", "Le Village dans la Ville", "food hall qui ouvre jamais",
+    "Guinguette boboland", "Nice university but open les CM", "At night this is a student playground", "Ragondins Land",
+    "Best place to hang out", "Jamais de tram en jour de manif", "Rich families", "14 juillet toute l'année", "Meuh meuh",
+    "Bar trop sympa !", "École trop cher", "Muscu de la street 💪🏽", "Zone préservée du capitalisme", "Le pays du Muscadet",
+    "Gna gna startups", "plus de blocus que de journée de cours", "Bouchon land", "LA TEUF", "boat and kayak rental",
+    "Free BBQ", "Birds paradise", "giant elephant", "Meilleurs Pizzas sud Nantes", "Ugly old swimming pool", "Sunday Fanfare",
+    "Park for contemplating life", "seulement des Martiens", "parisian everywhere", "Meilleur atelier cyclo du monde 🐔🖤",
+    "Pont impraticable aux voitures", "Vive le Muscadet !", "school too expensive", "Greenwashing",
+    "Centre ville bobo en construction 🏗", "Corridor des joggers", "Promenade cool", "Historique route des chicanes",
+    "mega piste cyclable le long de la loire", "Chill & poor students", "Nice Panorama", "Marché de Riche", "Rond point land",
+    "Best neighborhood", "BOUCHONS PERMANENTS", "Vieux à SUV", "ULTRA RICH PEOPLE", "Surfing spot", "Parisiens",
+    "Les gamins qui gueulent", "Best place ever", "BAR A BIERES", "Ceux qui savent les marées, dites rien",
+    "Ya juste un pont, pas de chateau", "9 McNugget, 3€ = infinite nuggets", "L'apéro", "Drunk people's food provider",
+    "Lieu où finir sa nuit trop arrosée", "Best place to study !", "Nice park", "rue des cyclistes",
+}
+HOOD_CATEGORY_FR = {"hipsters": "bobo / créatif", "rich": "aisé", "suits": "bureaux", "tourists": "touristique",
+                    "uni": "étudiant", "normies": "résidentiel ordinaire", "crime": "réputation difficile"}
+
+
+def quartiers():
+    """web/data/world/quartiers.json: Nantes' quartiers (admin level 10) and sub-quartiers (11) from OSM, plus
+    Saint-Herblain and Bouguenais as wholes, each with a profile; Hoodmaps' crowd vibe per sub-quartier and its
+    (vetted) tags, all in local metres."""
+    from shapely.geometry import Polygon, MultiPolygon, Point
+    from shapely.ops import unary_union, polygonize
+    from shapely.geometry import LineString
+    els = _overpass('[out:json][timeout:120];area["name"="Nantes"]["admin_level"="8"]->.n;'
+                    '(rel(area.n)["boundary"="administrative"]["admin_level"~"^(10|11)$"];'
+                    'rel["boundary"="administrative"]["admin_level"="8"]["name"~"^(Saint-Herblain|Bouguenais)$"];);out geom;')
+    ox, oy = geo.ORIGIN
+    def poly(e):
+        lines = []
+        for m in e.get("members", []):
+            if m.get("type") == "way" and m.get("geometry") and m.get("role") in ("outer", ""):
+                lines.append(LineString([_to_l93.transform(q["lon"], q["lat"]) for q in m["geometry"]]))
+        ps = list(polygonize(unary_union(lines)))
+        return unary_union(ps) if ps else None
+    q10, q11 = [], []
+    for e in els:
+        t = e.get("tags", {})
+        g = poly(e)
+        if g is None or g.is_empty:
+            continue
+        lvl = t.get("admin_level")
+        if lvl == "8":
+            q10.append((t["name"], g))
+        elif lvl == "10":
+            q10.append((t["name"], g))
+        else:
+            q11.append((t["name"], g))
+    # hoodmaps (read-only city API, allowed to agents by their robots.txt; fetched once at build time)
+    H = {"User-Agent": "tinynantes-build (one city, build time)"}
+    try:
+        api = requests.get("https://hoodmaps.com/api/nantes", headers=H, timeout=60).json()
+        tags = requests.get("https://hoodmaps.com/api/nantes/tags", headers=H, timeout=60).json()["tags"]
+    except (requests.RequestException, ValueError, KeyError):
+        api, tags = {"areas": []}, []
+    def rel_pts(g):
+        g = g.simplify(15)
+        polys = list(g.geoms) if isinstance(g, MultiPolygon) else [g]
+        return [[[round(x - ox), round(y - oy)] for x, y in p.exterior.coords] for p in polys]
+    out = []
+    for name, g in q10:
+        prof = QUARTIER_PROFILES.get(name)
+        subs = []
+        for sname, sg in q11:
+            if g.contains(sg.representative_point()):
+                vibe = next((a["category"] for a in api.get("areas", [])
+                             if sg.contains(Point(*_to_l93.transform(a["at"][1], a["at"][0])))), None)
+                tg = [x["tag"] for x in tags if x["tag"] in HOOD_OK
+                      and sg.contains(Point(*_to_l93.transform(x["longitude"], x["latitude"])))]
+                subs.append({"name": sname, "poly": rel_pts(sg), "area": round(sg.area),
+                             "vibe": HOOD_CATEGORY_FR.get(vibe), "tags": tg[:6]})
+        # tags in a quartier without sub-quartiers (Saint-Herblain, Bouguenais)
+        tg = [x["tag"] for x in tags if x["tag"] in HOOD_OK and not subs
+              and g.contains(Point(*_to_l93.transform(x["longitude"], x["latitude"])))]
+        out.append({"name": name, "poly": rel_pts(g), "area": round(g.area),
+                    "about": prof[0] if prof else "", "jobs": prof[1] if prof else {"employé": 1},
+                    "subs": subs, "tags": tg[:8]})
+    (WEB / "quartiers.json").write_text(json.dumps({
+        "quartiers": out, "hoodmaps": {"source": "https://hoodmaps.com/nantes-neighborhood-map",
+                                       "attribution": api.get("attribution", "Hoodmaps"),
+                                       "recommended": api.get("recommended"), "upcoming": api.get("upcoming")}},
+        ensure_ascii=False, separators=(",", ":")))
+    print(f"quartiers: {len(out)} quartiers, {sum(len(q['subs']) for q in out)} sub-quartiers, "
+          f"{sum(len(s['tags']) for q in out for s in q['subs']) + sum(len(q['tags']) for q in out)} hoodmaps tags kept")
+
+
 def main(argv):
     what = argv[0] if argv else "all"
     if what in ("osm", "all"):
@@ -783,6 +919,8 @@ def main(argv):
         bases()
     if what in ("water", "all"):
         water()
+    if what in ("quartiers", "all"):
+        quartiers()
 
 
 if __name__ == "__main__":
