@@ -13,11 +13,12 @@ const TN = window.TN;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const COS45 = Math.SQRT1_2;
-const SPEED = { walk: 1.4, run: 3.5, bike: 5.5, car: 14 };
+const SPEED = { walk: 1.6, run: 5.0, bike: 8.0, car: 20, heli: 50 };   // m/s; running is the default, Shift walks
+const HELIPORT = [-421.1, -751.1];                                     // CHU Nantes heliport (OSM), on the Hôtel-Dieu roof
 const SPRITE = 3.2;                          // people and bikes are drawn larger than life, or they'd be 4 px tall
 const F_BUILDING = 1, F_WATER = 2, F_ROAD = 4, F_FOOT = 8;
 
-const me = { x: 0, y: 0, z: 0, a: 0, mode: "walk", v: 0, ride: null, color: "#e8577a" };
+const me = { x: 0, y: 0, z: 0, a: 0, mode: "walk", v: 0, ride: null, color: "#e8577a", alt: 0, vx: 0, vy: 0 };
 let session = null;                           // { token, name, reserved }
 let ws = null, myId = null, wsFails = 0;
 const others = new Map();                     // id -> { name, x, y, z, a, m, from, to, t0, bubble }
@@ -382,6 +383,7 @@ addEventListener("keydown", (e) => {
   if (e.code === "Digit1") setMode("walk");
   else if (e.code === "Digit2") setMode("bike");
   else if (e.code === "Digit3") setMode("car");
+  else if (e.code === "Digit4") setMode("heli");
   keys.add(e.code);
   if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
 });
@@ -390,9 +392,19 @@ addEventListener("blur", () => keys.clear());
 
 function setMode(m) {
   if (me.ride) return toast("Descends d'abord (E à un arrêt)");
+  if (me.mode === "heli" && m !== "heli" && me.alt > 3) return toast("Pose-toi d'abord (C pour descendre)");
   if (m === "car" && !onRoad(me.x, me.y)) return toast("Rejoins une rue pour prendre la voiture");
+  if (room && m !== "walk") leave();
+  if (m === "heli" && me.mode !== "heli") { me.alt = 0; me.vx = me.vy = 0; me.climb = 60; toast("Décollage ! Espace monter · C descendre"); }
+  if (m !== "heli") me.alt = 0;
   me.mode = m; me.v = 0; hud();
+  $("altBtns").hidden = m !== "heli";
 }
+// mobile: climb / descend buttons
+document.querySelectorAll("#altBtns button").forEach((b) => {
+  const k = b.dataset.d === "1" ? "Space" : "KeyC";
+  b.onpointerdown = () => keys.add(k); b.onpointerup = b.onpointerleave = () => keys.delete(k);
+});
 document.querySelectorAll("#modes button").forEach((b) => (b.onclick = () => setMode(b.dataset.m)));
 $("actBtn").onclick = () => action();
 
@@ -618,6 +630,7 @@ function action() {
   const bp = nearestPlace(me.x, me.y, REACH + 4);
   if (room) { live.open("poi", live.world.pois.find((q) => q.id === room.id)); return; }
   if (bp) { if (me.mode === "walk") enter(bp); else { insideId = bp.id; live.open("poi", bp); } return; }
+  if (Math.hypot(HELIPORT[0] - me.x, HELIPORT[1] - me.y) < 40 && me.mode !== "heli") { setMode("heli"); return; }
   const st = live.world.rails?.station;
   if (st && Math.hypot(st[0] - me.x, st[1] - me.y) < 80) { live.open("station"); return; }
   toast("Rien ici. Approche-toi d'un arrêt (tram, bus, Navibus) ou d'un lieu.");
@@ -650,20 +663,22 @@ function step() {
     if (keys.has("KeyA") || keys.has("ArrowLeft")) ux -= 1;
     if (keys.has("KeyD") || keys.has("ArrowRight")) ux += 1;
     if (joy) { ux = joy[0]; uy = joy[1]; }
-    const run = keys.has("ShiftLeft") || keys.has("ShiftRight") || (joy && Math.hypot(...joy) > 0.9);
-    if (me.mode === "car") driveCar(ux, uy, dt);
+    const slow = keys.has("ShiftLeft") || keys.has("ShiftRight") || (joy && Math.hypot(...joy) < 0.45);
+    const run = !slow;
+    if (me.mode === "heli") flyHeli(ux, uy, dt);
+    else if (me.mode === "car") driveCar(ux, uy, dt);
     else {
       const mag = Math.min(1, Math.hypot(ux, uy));
       if (mag > 0.05) {
         const [wx, wy] = screenToWorldDir(ux, uy);
         const vmax = me.mode === "bike" ? SPEED.bike : run ? SPEED.run : SPEED.walk;
-        me.v = Math.min(vmax * mag, me.v + (me.mode === "bike" ? 2.5 : 6) * dt);
+        me.v = Math.min(vmax * mag, me.v + (me.mode === "bike" ? 6 : 14) * dt);
         me.a = Math.atan2(wy, wx);
         if (!moveBy(wx * me.v * dt, wy * me.v * dt) || !walkable(me.mode, me.x + wx * 0.6, me.y + wy * 0.6))
           bumpInto(me.x + wx * 0.8, me.y + wy * 0.8);
       } else me.v = Math.max(0, me.v - 8 * dt);
     }
-    me.z = room ? room.z : groundZ(me.x, me.y);
+    me.z = room ? room.z : groundZ(me.x, me.y) + (me.mode === "heli" ? me.alt : 0);
   }
   const [sx, sy] = live.project(me.x, me.y, me.z);
   const v = TN.view, k = 1 - Math.exp(-dt * 6);
@@ -695,8 +710,8 @@ function moveBy(dx, dy) {
 // GTA-style: up/down = throttle/brake-reverse, left/right = steer
 function driveCar(ux, uy, dt) {
   const throttle = -uy, steer = -ux;
-  if (throttle > 0) me.v += (me.v < 0 ? 9 : 3.2) * throttle * dt;
-  else if (throttle < 0) me.v += (me.v > 0 ? 9 : 2) * throttle * dt;
+  if (throttle > 0) me.v += (me.v < 0 ? 12 : 6.5) * throttle * dt;
+  else if (throttle < 0) me.v += (me.v > 0 ? 12 : 4) * throttle * dt;
   else me.v -= Math.sign(me.v) * Math.min(Math.abs(me.v), 1.2 * dt);
   // off the carriageway (pavement, square, park): walking pace-ish; probe a little ahead so 1-cell gaps don't brake
   const ahead = onRoad(me.x, me.y) || onRoad(me.x + Math.cos(me.a) * 2, me.y + Math.sin(me.a) * 2);
@@ -705,6 +720,51 @@ function driveCar(ux, uy, dt) {
   const dx = Math.cos(me.a) * me.v * dt, dy = Math.sin(me.a) * me.v * dt;
   if (walkable("car", me.x, me.y) && !walkable("car", me.x + dx, me.y + dy)) { me.v *= -0.25; return; }  // bump
   me.x += dx; me.y += dy;
+}
+
+// Helicopter: free flight with inertia (screen-relative like walking), Space / C to climb / descend
+function flyHeli(ux, uy, dt) {
+  const mag = Math.min(1, Math.hypot(ux, uy));
+  const up = keys.has("Space") ? 1 : keys.has("KeyC") || keys.has("ControlLeft") ? -1 : 0;
+  if (me.climb != null) { if (up || me.alt >= me.climb) me.climb = null; }
+  const vz = me.climb != null ? 14 : up * 14;
+  me.alt = Math.max(0, Math.min(400, me.alt + vz * dt));
+  const air = me.alt > 1.5;
+  let tx = 0, ty = 0;
+  if (mag > 0.05 && air) { const [wx, wy] = screenToWorldDir(ux, uy); tx = wx * SPEED.heli * mag; ty = wy * SPEED.heli * mag; }
+  const k = 1 - Math.exp(-dt * (mag > 0.05 ? 0.9 : 0.6));          // inertia: ~1 s to pick up speed, a bit longer to stop
+  me.vx += (tx - me.vx) * k; me.vy += (ty - me.vy) * k;
+  if (!air) { me.vx = me.vy = 0; }
+  me.x += me.vx * dt; me.y += me.vy * dt;
+  me.v = Math.hypot(me.vx, me.vy);
+  if (me.v > 1) { let da = Math.atan2(me.vy, me.vx) - me.a; da = Math.atan2(Math.sin(da), Math.cos(da)); me.a += da * Math.min(1, dt * 3); }
+}
+function heliModel(x, y, z, a, col, isMe) {
+  const g = live.zAt(x, y), S = 2.2;                                // drawn larger than life (like people) to read on the map
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const B = (dx, dy, dz, L, W, H, top, side) => live.box(x + (ca * dx - sa * dy) * S, y + (sa * dx + ca * dy) * S, z + dz * S, a, L * S, W * S, H * S, top, side);
+  const [gx, gy] = live.project(x, y, g), [ax, ay] = live.project(x, y, z);
+  return [
+    { sx: gx, sy: gy, h: 0, draw: () => {                            // shadow on the ground
+      const c = live.ctx, [cx, cy] = live.toCanvas(gx, gy), s = TN.view.s * TN.dpr * S;
+      c.fillStyle = "rgba(0,0,0,0.22)"; c.beginPath(); c.ellipse(cx, cy, 4.5 * s, 2.3 * s, 0, 0, 7); c.fill(); } },
+    { sx: ax, sy: ay, h: 3 * S, room: true, overlay: z - g > 12, draw: () => {
+      const c = live.ctx;
+      B(-4.2, 0, 1.3, 5, 0.35, 0.35, "#e9e9e6", "#b7b9bb");           // tail boom
+      B(-6.5, 0, 1.3, 0.6, 0.12, 1.3, "#d8342c", "#a5261f");          // fin
+      for (const k of [-1, 1]) B(0, k * 0.9, 0, 3.6, 0.12, 0.12, "#333", "#222");   // skids
+      B(0, 0, 0.4, 4.2, 1.8, 1.7, "#f4f4f0", col);                    // cabin
+      B(1.3, 0, 1.0, 1.4, 1.7, 1.0, "#9fc4dc", "#5d86a3");            // canopy
+      B(0, 0, 2.1, 0.5, 0.5, 0.4, "#555", "#333");                    // mast
+      const [hx, hy] = live.toCanvas(...live.project(x, y, z + 2.55 * S)), sc = TN.view.s * TN.dpr * S, R = 5.4;
+      const t = performance.now() / 1000 * (z - g > 0.5 ? 24 : 6);
+      c.save(); c.translate(hx, hy); c.scale(1, 0.72);
+      c.fillStyle = "rgba(40,40,40,0.12)"; c.beginPath(); c.arc(0, 0, R * sc, 0, 7); c.fill();
+      c.strokeStyle = "rgba(30,30,30,0.85)"; c.lineWidth = Math.max(1.5, 0.3 * sc); c.lineCap = "round";
+      for (let k = 0; k < 2; k++) { const b = t + k * Math.PI / 2; c.beginPath(); c.moveTo(-Math.cos(b) * R * sc, -Math.sin(b) * R * sc); c.lineTo(Math.cos(b) * R * sc, Math.sin(b) * R * sc); c.stroke(); }
+      c.restore();
+    } },
+  ];
 }
 
 // ---------------------------------------------------------------- drawing (a layer of live.js)
@@ -723,10 +783,11 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   const [sx, sy] = live.project(x, y, z), col = hslHex(o.color || "#e8577a"), K = SPRITE;
   const items = [];
   if (mode === "tram" || mode === "bus" || mode === "navibus") return items;    // inside the vehicle
+  if (mode === "heli") items.push(...heliModel(x, y, z, a, col, isMe));
   const hsh = [...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
   const step = Math.floor(performance.now() / 1000 * 2.2) % 2;
   const spr = mode === "car" ? live.SPRITE_CARS[hsh % 8] : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;
-  items.push({ sx, sy, h: 2 * K, draw: () => {
+  if (mode !== "heli") items.push({ sx, sy, h: 2 * K, draw: () => {
     if (live.sprite(spr, x, y, z, a, "p:" + name)) return;
     if (mode === "car") live.box(x, y, z + 0.2, a, 4.3, 1.8, 1.45, live.shade(col, 1.1), col, "rgba(20,24,28,.6)");
     else {
@@ -737,7 +798,7 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
     }
   } });
   items.push({ sx, sy, overlay: true, draw: () => {
-    const [cx, cy] = live.toCanvas(...live.project(x, y, z + 2.2 * K));
+    const [cx, cy] = live.toCanvas(...live.project(x, y, z + (mode === "heli" ? 7.5 : 2.2 * K)));
     const ctx = document.getElementById("live").getContext("2d");
     ctx.font = `600 ${11 * TN.dpr}px Geist, system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
     ctx.lineWidth = 3 * TN.dpr; ctx.strokeStyle = "rgba(20,24,28,.85)"; ctx.strokeText(name, cx, cy);
@@ -780,7 +841,7 @@ function hud() {
        i >= 0 ? `Prochain arrêt : <b>${esc(v.names[i])}</b> (${Math.max(0, Math.round((v.arr[i] - t) / 60))} min)` : "");
   } else {
     const kmh = Math.round(Math.abs(me.v) * 3.6);
-    txt = `<b>${esc(session?.name)}</b> · ${{ walk: "à pied", bike: "à vélo", car: "en voiture" }[me.mode]} · ${kmh} km/h`;
+    txt = `<b>${esc(session?.name)}</b> · ${{ walk: "à pied", bike: "à vélo", car: "en voiture", heli: "en hélico" }[me.mode]} · ${kmh} km/h${me.mode === "heli" ? ` · ${Math.round(me.alt)} m` : ""}`;
   }
   h.innerHTML = txt;
 }

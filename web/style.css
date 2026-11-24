@@ -170,3 +170,5 @@ body.playing .mini, body.playing .search { display: none; }
   border: 0; background: rgb(20 24 30 / .82); color: #fff; font: inherit; font-weight: 600; box-shadow: var(--shadow); cursor: pointer; }
 .hint kbd { display: inline-block; min-width: 1.4em; margin-right: 6px; padding: 0 5px; border-radius: 4px; background: var(--accent);
   color: var(--accent-ink); font: inherit; text-align: center; }
+.altbtns { position: fixed; right: 84px; bottom: 120px; display: flex; flex-direction: column; gap: 8px; }
+.altbtns button { width: 52px; height: 52px; border-radius: 50%; border: 0; background: rgb(20 24 30 / .8); color: #fff; font-size: 20px; }

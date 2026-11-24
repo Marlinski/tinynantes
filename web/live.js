@@ -528,6 +528,13 @@ function placeItems(t, rect) {
     if (inRect(sx, sy, rect)) out.push({ sx, sy, h: 0, overlay: true, draw: () => pin(sx, sy, "🚉"),
       hit: { r: 16, dy: -18, open: () => live.open?.("station", {}) }, tip: () => ["Gare de Nantes", "départs et arrivées"] });
   }
+  // the CHU heliport (Hôtel-Dieu roof): E there = take the helicopter
+  {
+    const hp = [-421.1, -751.1];
+    const [sx, sy] = project(hp[0], hp[1], zAt(hp[0], hp[1]) + 30);
+    if (inRect(sx, sy, rect) && TN.view.s > 0.4) out.push({ sx, sy, h: 0, overlay: true, draw: () => pin(sx, sy, "🚁"),
+      tip: () => ["Héliport du CHU", TN.playing ? "E ici pour prendre l'hélico (ou touche 4)" : "🚶 puis touche 4 pour voler"], hit: { r: 16, dy: -18, open: () => {} } });
+  }
   const ap = world.airport;
   if (ap) {
     const [sx, sy] = project(ap[0], ap[1], zAt(ap[0], ap[1]));

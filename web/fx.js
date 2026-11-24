@@ -67,20 +67,24 @@ function grade(alt, s) {
 
 // ---------------------------------------------------------------- light sources
 let lamps = null;                                     // world points along the measured main roads
+// Street lighting: a warm strip along the middle of the roads (lamps on the side ended up inside houses on
+// narrow streets). Points every 6 m on the measured traffic sections, with their ground height.
 function buildLamps() {
   const secs = live.sections;
   if (!secs.length) return;
   lamps = [];
   for (const s of secs) {
+    const line = [];
     let acc = 0;
     for (let k = 1; k < s.p.length; k++) {
       const [ax, ay] = s.p[k - 1], [bx, by] = s.p[k], L = Math.hypot(bx - ax, by - ay);
-      for (; acc < L; acc += 32) {
+      for (; acc < L; acc += 6) {
         const f = acc / L, x = ax + (bx - ax) * f, y = ay + (by - ay) * f;
-        lamps.push([x + (by - ay) / L * 7, y - (bx - ax) / L * 7, live.zAt(x, y)]);    // on the pavement
+        line.push([x, y, live.zAt(x, y)]);
       }
       acc -= L;
     }
+    if (line.length > 1) lamps.push(line);
   }
 }
 const sprites = {};
@@ -108,15 +112,30 @@ function drawLights(G) {
   if (!lamps) buildLamps();
   const hour = new Date().getHours();
   const inView = (x, y, m) => x > -m && y > -m && x < W + m && y < H + m;
-  // street lamps
+  // street lighting: strips along the roads, broken where a building hides the road
   if (lamps && TN.view.s > 0.25) {
-    const img = glowSprite(LAMP), r = Math.max(4, 11 * s);
-    for (const [x, y, z] of lamps) {
-      const [sx, sy] = live.project(x, y, z + 4);              // the lamp head, 4 m up
-      const [cx, cy] = live.toCanvas(sx, sy);
-      // hidden behind a building (height maps): no glow over the roofs in front
-      if (inView(cx, cy, r) && !live.occluded(sx, sy, live.project(x, y, z)[1])) glow(img, cx, cy, r, 0.55 * k);
+    fg.lineCap = "round"; fg.lineJoin = "round";
+    const wide = Math.max(3, 9 * s), core = Math.max(1, 2.2 * s);
+    const runs = [];
+    for (const line of lamps) {
+      let run = [];
+      for (const [x, y, z] of line) {
+        const [sx, sy] = live.project(x, y, z + 0.5);
+        const [cx, cy] = live.toCanvas(sx, sy);
+        if (inView(cx, cy, wide) && !live.occluded(sx, sy, sy)) run.push([cx, cy]);
+        else { if (run.length > 1) runs.push(run); run = []; }
+      }
+      if (run.length > 1) runs.push(run);
     }
+    const stroke = (w, col, a) => {
+      fg.globalAlpha = a; fg.strokeStyle = col; fg.lineWidth = w;
+      fg.beginPath();
+      for (const r of runs) { fg.moveTo(...r[0]); for (let i = 1; i < r.length; i++) fg.lineTo(...r[i]); }
+      fg.stroke();
+    };
+    stroke(wide * 2.2, "rgb(255,170,90)", 0.10 * k);      // the pool of light on the street
+    stroke(wide, "rgb(255,190,120)", 0.18 * k);
+X
   }
   // lit bars and restaurants in the evening
   if (TN.view.s > 0.5 && (hour >= 17 || hour < 2)) {
