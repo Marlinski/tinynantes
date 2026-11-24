@@ -226,17 +226,20 @@ def assemble_all(h):
     print(f"h{h}: {n} tiles assembled", flush=True)
 
 
-def fix_estuary(h, min_water=0.03, max_blue=0.6):
+def fix_estuary(h, min_water=0.03, max_blue=0.6, only=None, max_blob=1500):
     """Repair assembled tiles where real water was painted as land (the muddy Loire downstream of Nantes: the
     painter turned it into fields). Each tile with BD TOPO water is re-assembled from its painting first (so the
     repair can be re-run), and if its water is mostly not blue, every pixel that is water both in BD TOPO and in the
-    3D render (uniform, coloured; bridges, quays and boats are grey or white there) gets the water colour."""
+    3D render (uniform, coloured; bridges, quays and boats are grey or white there) gets the water colour.
+    Also repaired: a tile whose water is mostly blue but holds one large non-blue patch (a village the painter put
+    in the middle of the Loire off the tip of the Île de Nantes), more than `max_blob` pixels in one piece.
+    `only`: a list of (i, j) to limit the run to."""
     from scipy import ndimage
     from .qa import WATER_RGB
     art_dir = ROOT / "out" / f"h{h}" / "art"
     src, _ = _dirs(h)
     view, n = geo.View(h), 0
-    for i, j in view.tiles_for_area():
+    for i, j in (only or view.tiles_for_area()):
         f = art_dir / f"{i}_{j}.png"
         if not f.exists():
             continue
@@ -246,8 +249,12 @@ def fix_estuary(h, min_water=0.03, max_blue=0.6):
         t = assemble_tile(h, i, j)
         if t is None:
             continue
-        px = t.astype(int)[wm]
-        if (px[:, 2] > px[:, 0] + 15).mean() >= max_blue:
+        ti = t.astype(int)
+        blue = ti[..., 2] > ti[..., 0] + 15
+        inner = ndimage.binary_erosion(wm, iterations=6, border_value=1)          # away from the banks (quays, moored boats)
+        lab, nb = ndimage.label(ndimage.binary_opening(inner & ~blue, iterations=2))
+        blob = np.bincount(lab.ravel())[1:].max() if nb else 0
+        if blue[wm].mean() >= max_blue and blob <= max_blob:
             Image.fromarray(t).save(f)               # fine as painted
             continue
         ren = np.asarray(Image.open(src / f"{i}_{j}.png").convert("RGB")).astype("f4")[M:M + N, M:M + N]
@@ -255,8 +262,9 @@ def fix_estuary(h, min_water=0.03, max_blue=0.6):
         lum = ren.mean(-1)
         local = ndimage.uniform_filter(lum, 9)
         flat = np.abs(lum - local) < 14                  # water is smooth; bridges, boats, quays have edges
-        waterish = (sat > 10) & (ren.max(-1) < 215) & flat
-        m = ndimage.binary_erosion(wm, iterations=2) & ndimage.binary_opening(waterish, iterations=2)
+        # muddy water is barely coloured (half of it under 14 of saturation): coloured, or dark (bridge decks are light)
+        waterish = ((sat > 10) | (lum < 120)) & (ren.max(-1) < 215) & flat
+        m = ndimage.binary_erosion(wm, iterations=2, border_value=1) & ndimage.binary_opening(waterish, iterations=2)
         a = t.astype("f4")
         tex = np.clip((ren.mean(-1) - ndimage.uniform_filter(ren.mean(-1), 61)) / 80.0, -0.08, 0.08)   # ripples from the render
         col = WATER_RGB[None, None, :] * (1.0 + tex[..., None])
@@ -276,7 +284,8 @@ def main(argv):
     if what in ("assemble", "all"):
         assemble_all(h)
     if what in ("estuary", "all"):
-        fix_estuary(h)
+        only = [tuple(map(int, a.split("_"))) for a in argv[2:] if a != "--"] or None    # e.g. estuary -- -1_6 0_6
+        fix_estuary(h, only=only)
 
 
 if __name__ == "__main__":
