@@ -61,6 +61,24 @@ class Model:
             for yy in (y - w / 2, y + w / 2):
                 self.tris.append((((x, yy, r), p(a0, yy), p(a1, yy)), (0.16, 0.16, 0.17)))
 
+    def ring(self, x, r, w, tyre, rim, spokes=4):
+        """A bicycle wheel in the x-z plane at y = 0: a tyre ring (see-through middle), thin spokes, a hub."""
+        n = 16
+        p = lambda a, rr, yy: (x + rr * math.cos(a), yy, r + rr * math.sin(a))
+        for k in range(n):
+            a0, a1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
+            self.quad(p(a0, r, -w / 2), p(a1, r, -w / 2), p(a1, r, w / 2), p(a0, r, w / 2), tyre)
+            for yy in (-w / 2, w / 2):
+                self.quad(p(a0, r * 0.72, yy), p(a1, r * 0.72, yy), p(a1, r, yy), p(a0, r, yy), tyre)
+                self.quad(p(a0, r * 0.62, yy), p(a1, r * 0.62, yy), p(a1, r * 0.72, yy), p(a0, r * 0.72, yy), rim)
+        for k in range(spokes):
+            a = math.pi * k / spokes
+            t = r * 0.05
+            c, s_ = math.cos(a), math.sin(a)
+            q = lambda u, v: (x + u * c - v * s_, 0.0, r + u * s_ + v * c)
+            self.quad(q(-r * 0.62, -t), q(r * 0.62, -t), q(r * 0.62, t), q(-r * 0.62, t), rim)
+        self.box(x - r * 0.12, x + r * 0.12, -w / 2, w / 2, r * 0.88, r * 1.12, rim)
+
     def mesh(self, yaw):
         c, s = math.cos(yaw), math.sin(yaw)
         V, C = [], []
@@ -77,28 +95,86 @@ LIGHT = (1.0, 0.95, 0.78)
 RED = (0.75, 0.1, 0.1)
 
 
+def prism(m, prof, w, cols, side, w_top=None, z_ref=None):
+    """A solid from a convex side profile [(x, z)] (counter-clockwise seen from +y), extruded across the car:
+    half-width `w` at the bottom of the profile, narrowing to `w_top` at its top (tumblehome). cols[k] colours
+    the face from point k to k+1 (None: skipped); `side` colours both flanks."""
+    zs = [z for _, z in prof]
+    z0, z1 = min(zs), max(zs)
+    w_top = w if w_top is None else w_top
+    hw = lambda z: w + (w_top - w) * ((z - z0) / (z1 - z0) if z1 > z0 else 0.0)
+    L = [(x, -hw(z), z) for x, z in prof]
+    R = [(x, hw(z), z) for x, z in prof]
+    for k in range(1, len(prof) - 1):
+        m.tris.append(((L[0], L[k + 1], L[k]), side))
+        m.tris.append(((R[0], R[k], R[k + 1]), side))
+    for k in range(len(prof)):
+        j = (k + 1) % len(prof)
+        if cols[k] is not None:
+            m.quad(L[k], L[j], R[j], R[k], cols[k])
+
+
+def shade3(c, k):
+    return tuple(min(1.0, v * k) for v in c)
+
+
+CHROME = (0.62, 0.64, 0.66)
+PLATE = (0.9, 0.9, 0.86)
+
+
 def car(body, kind="hatch"):
+    """A small car seen from above at 12 px/m: lower body with a sloped bonnet, a glasshouse with raked
+    windscreen and rear window, pillars, wheels in dark arches, lights and plates."""
     m = Model()
-    L = {"hatch": 3.9, "sedan": 4.5, "van": 4.9, "suv": 4.5}[kind]
-    W, h0 = 1.78, 0.28
-    hb = 0.95 if kind != "van" else 1.0
-    m.box(-L / 2, L / 2, -W / 2, W / 2, h0, h0 + 0.62, body, front=body, back=body)          # lower body
-    m.box(-L / 2 - 0.05, -L / 2 + 0.1, -W / 2, W / 2, h0, h0 + 0.3, DARK)                     # rear bumper
-    m.box(L / 2 - 0.1, L / 2 + 0.05, -W / 2, W / 2, h0, h0 + 0.3, DARK)                       # front bumper
-    for yy in (-W / 2 + 0.2, W / 2 - 0.35):
-        m.box(L / 2, L / 2 + 0.03, yy, yy + 0.15, h0 + 0.42, h0 + 0.55, LIGHT)                # headlights
-        m.box(-L / 2 - 0.03, -L / 2, yy, yy + 0.15, h0 + 0.42, h0 + 0.55, RED)                # tail lights
-    if kind == "van":
-        m.box(-L / 2, L / 2 - 0.9, -W / 2 + 0.02, W / 2 - 0.02, h0 + 0.62, h0 + 1.65, body)
-        m.box(L / 2 - 0.9, L / 2 - 0.4, -W / 2 + 0.05, W / 2 - 0.05, h0 + 0.62, h0 + 1.5, body, GLASS, front=GLASS, taper=0.25)
-    else:
-        x0, x1 = (-L / 2 + 0.45, L / 2 - 1.15) if kind != "hatch" else (-L / 2 + 0.15, L / 2 - 1.05)
-        roof = tuple(min(1, c * 1.08) for c in body)
-        m.box(x0, x1, -W / 2 + 0.08, W / 2 - 0.08, h0 + 0.62, h0 + 0.62 + (0.55 if kind != "suv" else 0.68),
-              roof, GLASS, front=GLASS, back=GLASS, taper=0.22)
-    for xx in (-L / 2 + 0.75, L / 2 - 0.75):
-        for yy in (-W / 2 + 0.05, W / 2 - 0.05):
-            m.wheel(xx, yy)
+    L = {"hatch": 3.95, "sedan": 4.5, "van": 4.6, "suv": 4.5}[kind]
+    W = 1.78
+    h0, belt = 0.3, 0.92 if kind != "suv" else 1.02
+    roof = {"hatch": 1.45, "sedan": 1.42, "van": 1.47, "suv": 1.62}[kind]
+    hood = {"hatch": 0.95, "sedan": 1.15, "van": 1.0, "suv": 1.05}[kind]
+    xf, xr = L / 2, -L / 2
+    dark = DARK
+    # lower body: bumper, bonnet sloping up to the scuttle, flat waist, boot / tailgate
+    lo = [(xr, h0), (xf, h0), (xf, h0 + 0.38), (xf - 0.22, belt - 0.12), (xf - hood, belt), (xr + 0.12, belt), (xr, belt - 0.2)]
+    prism(m, lo, W / 2, [None, dark, body, shade3(body, 1.04), body, body, body], body)
+    # sill and bumpers in dark plastic, a touch proud of the body
+    m.box(xr + 0.55, xf - 0.55, -W / 2 - 0.01, W / 2 + 0.01, h0, h0 + 0.12, dark)
+    m.box(xf - 0.12, xf + 0.04, -W / 2 + 0.02, W / 2 - 0.02, h0, h0 + 0.2, dark)
+    m.box(xr - 0.04, xr + 0.12, -W / 2 + 0.02, W / 2 - 0.02, h0, h0 + 0.2, dark)
+    # glasshouse
+    ws = xf - hood                                     # foot of the windscreen
+    rake = 0.62 if kind != "suv" else 0.5
+    back_foot = {"hatch": xr + 0.12, "sedan": xr + 0.85, "van": xr + 0.1, "suv": xr + 0.12}[kind]
+    back_top = {"hatch": xr + 0.4, "sedan": xr + 1.4, "van": xr + 0.14, "suv": xr + 0.25}[kind]
+    gh = [(back_foot, belt), (ws, belt), (ws - rake, roof), (back_top, roof)]
+    roofc = shade3(body, 1.08)
+    prism(m, gh, W / 2 - 0.06, [None, GLASS, roofc, GLASS], GLASS, w_top=W / 2 - 0.2)
+    # pillars, in the body colour, just outside the side glass (A, B and C)
+    def pillar(xa, xb, t=0.12):
+        for sgn in (-1, 1):
+            ya = sgn * (W / 2 - 0.05); yb = sgn * (W / 2 - 0.19)
+            m.quad((xa, ya, belt), (xa + t, ya, belt), (xb + t, yb, roof), (xb, yb, roof), body)
+            m.quad((xa + t, ya, belt), (xa, ya, belt), (xb, yb, roof), (xb + t, yb, roof), body)
+    pillar(ws - 0.1, ws - rake - 0.02)
+    mid = (ws - rake + back_top) / 2 + (0.15 if kind == "sedan" else 0.0)
+    pillar(mid, mid, 0.14)
+    pillar(back_foot, back_top - 0.06, 0.22 if kind != "sedan" else 0.14)
+    # mirrors
+    for sgn in (-1, 1):
+        m.box(ws - 0.25, ws - 0.08, sgn * (W / 2 + 0.12) - 0.07, sgn * (W / 2 + 0.12) + 0.07, belt - 0.05, belt + 0.1, body)
+    # lights and plates
+    for sgn in (-1, 1):
+        y0 = sgn * (W / 2 - 0.12)
+        m.box(xf - 0.2, xf + 0.005, min(y0, y0 - sgn * 0.38), max(y0, y0 - sgn * 0.38), h0 + 0.3, h0 + 0.42, LIGHT)
+        m.box(xr - 0.005, xr + 0.1, min(y0, y0 - sgn * 0.3), max(y0, y0 - sgn * 0.3), belt - 0.38, belt - 0.24, RED)
+    m.box(xf + 0.04, xf + 0.05, -0.25, 0.25, h0 + 0.05, h0 + 0.17, PLATE)
+    m.box(xr - 0.05, xr - 0.04, -0.25, 0.25, h0 + 0.25, h0 + 0.37, PLATE)
+    # wheels, in dark arches
+    for xx in (xr + 0.78, xf - 0.78):
+        for sgn in (-1, 1):
+            yy = sgn * (W / 2 - 0.02)
+            m.quad((xx - 0.45, yy * 1.004, h0), (xx + 0.45, yy * 1.004, h0), (xx + 0.32, yy * 1.004, h0 + 0.42), (xx - 0.32, yy * 1.004, h0 + 0.42), (0.08, 0.08, 0.09))
+            m.wheel(xx, sgn * (W / 2 - 0.08), r=0.33, w=0.2)
+            m.box(xx - 0.12, xx + 0.12, sgn * (W / 2 - 0.02) - 0.005, sgn * (W / 2 - 0.02) + 0.005, 0.21, 0.45, CHROME)
     return m
 
 
@@ -179,9 +255,12 @@ def person(coat, legs=(0.18, 0.2, 0.26), phase=0.0, bike=False, skin=(0.93, 0.76
     shoe = (0.1, 0.09, 0.09)
     if bike:
         frame = (0.12, 0.13, 0.14)
-        m.wheel(-0.55 * K, 0, r=0.33 * K, w=0.05 * K, col=frame)
-        m.wheel(0.55 * K, 0, r=0.33 * K, w=0.05 * K, col=frame)
-        m.box(-0.5 * K, 0.5 * K, -0.03 * K, 0.03 * K, 0.33 * K, 0.42 * K, frame)
+        paint_ = FRAMES[COATS.index(coat) % len(FRAMES)] if coat in COATS else (0.7, 0.72, 0.75)
+        m.ring(-0.55 * K, 0.33 * K, 0.06 * K, (0.08, 0.08, 0.09), (0.7, 0.72, 0.74))
+        m.ring(0.55 * K, 0.33 * K, 0.06 * K, (0.08, 0.08, 0.09), (0.7, 0.72, 0.74))
+        m.box(-0.55 * K, 0.42 * K, -0.035 * K, 0.035 * K, 0.36 * K, 0.44 * K, paint_)                   # down tube
+        m.box(-0.3 * K, -0.22 * K, -0.035 * K, 0.035 * K, 0.33 * K, 0.5 * K, paint_)                    # seat tube
+        m.box(0.4 * K, 0.48 * K, -0.035 * K, 0.035 * K, 0.33 * K, 0.85 * K, paint_)                     # fork
         m.box(0.42 * K, 0.5 * K, -0.25 * K, 0.25 * K, 0.85 * K, 0.9 * K, frame)                         # handlebar
         m.box(-0.3 * K, -0.12 * K, -0.07 * K, 0.07 * K, 0.5 * K, 0.55 * K, DARK)                         # saddle
         z0 = 0.5 * K
@@ -253,6 +332,8 @@ def lying(coat, legs, skin, hair, style, k):
 
 COATS = [(0.72, 0.18, 0.16), (0.17, 0.38, 0.6), (0.85, 0.62, 0.2), (0.25, 0.45, 0.3), (0.42, 0.3, 0.6), (0.86, 0.84, 0.8),
          (0.16, 0.17, 0.2), (0.75, 0.42, 0.52)]
+FRAMES = [(0.15, 0.45, 0.62), (0.85, 0.85, 0.82), (0.2, 0.5, 0.3), (0.72, 0.18, 0.16), (0.9, 0.75, 0.2),
+          (0.2, 0.22, 0.25), (0.6, 0.62, 0.65), (0.15, 0.3, 0.55)]
 HAIRS = [(0.25, 0.17, 0.1), (0.1, 0.08, 0.07), (0.75, 0.6, 0.3), (0.55, 0.3, 0.15)]
 SKINS = [(0.93, 0.76, 0.62), (0.62, 0.43, 0.3), (0.98, 0.84, 0.72), (0.42, 0.28, 0.2), (0.8, 0.6, 0.45)]
 LEGS = [(0.18, 0.2, 0.26), (0.24, 0.3, 0.45), (0.15, 0.15, 0.16), (0.42, 0.36, 0.28), (0.2, 0.28, 0.42), (0.3, 0.3, 0.32),
@@ -422,15 +503,15 @@ def fire_engine():
 
 def police_car():
     m = car((0.95, 0.95, 0.95), "sedan")
-    m.box(-2.26, 2.26, -0.9, 0.9, 0.28 + 0.3, 0.28 + 0.48, (0.12, 0.2, 0.55))   # blue band
-    m.box(-2.27, 2.27, -0.91, 0.91, 0.28 + 0.48, 0.28 + 0.54, (0.8, 0.12, 0.12)) # red pinstripe
+    m.box(-2.24, 2.22, -0.9, 0.9, 0.48, 0.64, (0.12, 0.2, 0.55))                 # blue band
+    m.box(-2.24, 2.22, -0.905, 0.905, 0.64, 0.69, (0.8, 0.12, 0.12))           # red pinstripe
     _lightbar(m, -0.2, 0.28 + 0.62 + 0.55)
     return m
 
 
 def samu_car():
     m = car((0.96, 0.96, 0.94), "suv")
-    m.box(-2.26, 2.26, -0.9, 0.9, 0.28 + 0.3, 0.28 + 0.5, (0.98, 0.55, 0.1))
+    m.box(-2.24, 2.22, -0.9, 0.9, 0.5, 0.68, (0.98, 0.55, 0.1))
     _lightbar(m, -0.2, 0.28 + 0.62 + 0.68)
     return m
 
@@ -447,6 +528,51 @@ def box_truck():
     for xx in (-3.0, -1.9, 2.6):
         for yy in (-W / 2 + 0.05, W / 2 - 0.05):
             m.wheel(xx, yy, r=0.45, w=0.3)
+    return m
+
+
+def _cab(m, x0, x1, W, H, col):
+    """A lorry cab facing +x: body, windscreen and side windows, bumper, lights."""
+    m.box(x0, x1, -W / 2, W / 2, 0.45, 1.3, col, front=col)
+    m.box(x0, x1 - 0.12, -W / 2 + 0.04, W / 2 - 0.04, 1.3, H, col, GLASS, front=GLASS, taper=0.12)
+    m.box(x0 + 0.05, x1 - 0.5, -W / 2 + 0.03, W / 2 - 0.03, 1.3, 1.95, col, GLASS, back=col)   # side windows
+    m.box(x1 - 0.06, x1 + 0.06, -W / 2 + 0.05, W / 2 - 0.05, 0.4, 0.62, DARK)
+    for yy in (-W / 2 + 0.15, W / 2 - 0.4):
+        m.box(x1, x1 + 0.03, yy, yy + 0.25, 0.75, 0.9, LIGHT)
+
+
+def tow_truck(loaded=False):
+    """La fourrière: a yellow cab and a flat bed (with a burnt-out car on it on the way back)."""
+    m = Model()
+    W, Y = 2.25, (0.95, 0.66, 0.0)
+    _cab(m, 1.2, 3.25, W, 2.45, Y)
+    m.box(-0.15, 0.25, -0.12, 0.12, 2.45, 2.6, DARK)
+    m.box(-0.4, 0.4, -0.5, 0.5, 2.6, 2.72, (1.0, 0.62, 0.0))                       # beacon
+    m.box(-3.3, 1.15, -W / 2, W / 2, 0.45, 0.95, (0.36, 0.38, 0.41), back=(0.22, 0.23, 0.25))   # bed
+    m.box(-3.3, 1.15, -W / 2 - 0.02, W / 2 + 0.02, 0.6, 0.75, (0.95, 0.66, 0.0))    # chevron band
+    if loaded:
+        w = car((0.12, 0.11, 0.1), "hatch")
+        w.tris = [(tuple((x - 1.1, y, z + 0.67) for x, y, z in tri), tuple(c * 0.55 for c in col)) for tri, col in w.tris]
+        m.tris += w.tris
+    for xx in (-2.3, -1.3, 2.3):
+        for yy in (-W / 2 + 0.05, W / 2 - 0.05):
+            m.wheel(xx, yy, r=0.45, w=0.3)
+    for yy in (-W / 2 + 0.2, W / 2 - 0.35):
+        m.box(-3.33, -3.3, yy, yy + 0.15, 0.6, 0.8, RED)
+    return m
+
+
+def sweeper():
+    """Propreté de la Ville: a white cab, a green tank, the side brushes drawn by the viewer (they spin)."""
+    m = Model()
+    W, G = 2.05, (0.48, 0.75, 0.23)
+    _cab(m, 0.6, 2.6, W, 2.35, (0.95, 0.95, 0.93))
+    m.box(-2.8, 0.5, -W / 2, W / 2, 0.45, 2.2, G, front=G, back=shade3(G, 0.85), taper=0.08)
+    m.box(-2.82, 0.5, -W / 2 - 0.01, W / 2 + 0.01, 0.8, 0.95, (0.95, 0.95, 0.93))
+    m.box(-0.2, 0.2, -0.45, 0.45, 2.35, 2.48, (1.0, 0.62, 0.0))                       # beacon
+    for xx in (-2.0, 1.8):
+        for yy in (-W / 2 + 0.05, W / 2 - 0.05):
+            m.wheel(xx, yy, r=0.4, w=0.28)
     return m
 
 
@@ -618,6 +744,9 @@ def catalogue():
     out.append(("truck_box", box_truck(), 9.0))
     out.append(("car_taxi", taxi(), 12.0))
     out.append(("car_teal_hatch", car((0.2, 0.55, 0.55), "hatch"), 12.0))
+    out.append(("ems_tow", tow_truck(), 10.0))
+    out.append(("ems_tow_loaded", tow_truck(True), 10.0))
+    out.append(("ems_sweeper", sweeper(), 10.0))
     # boats: moving ones in 16 directions; moored landmarks in their one real heading (water.json)
     out.append(("boat_peniche", peniche(), 6.0))
     out.append(("boat_peniche2", peniche((0.45, 0.3, 0.2)), 6.0))
@@ -664,24 +793,24 @@ void main() {
 """
 
 
-def render_sheet(items, view, cell=CELL):
-    """items: [(name, model, ppm)]; each gets one row of 16 directions (two rows of 8 cells). Returns the
-    RGB sheet, the mask and the atlas entries."""
+def render_sheet(items, view, cell=CELL, sheet=SHEET, dirs=DIRS, raw_out=None):
+    """items: [(name, model, ppm)]; each gets `dirs` directions, cells left to right then down. Returns the
+    RGB sheet, the mask and the atlas entries (and the supersampled RGBA in raw_out, if given a list)."""
     r, d, b = view.axes
-    n = SHEET * SS
+    n = sheet * SS
     ctx = moderngl.create_standalone_context(backend="egl")
     prog = ctx.program(vertex_shader=VS, fragment_shader=FS)
     prog["u_r"].value = tuple(r); prog["u_d"].value = tuple(d); prog["u_b"].value = tuple(b)
     prog["u_size"].value = (n, n)
     fbo = ctx.framebuffer([ctx.renderbuffer((n, n), 4)], ctx.depth_renderbuffer((n, n)))
     fbo.use(); ctx.enable(moderngl.DEPTH_TEST)
-    fbo.clear(*[c / 255 for c in BG], 0.0)
+    fbo.clear(*([0.0] * 4 if raw_out is not None else [c / 255 for c in BG] + [0.0]))
     atlas = {}
-    per_row = SHEET // cell
+    per_row = sheet // cell
     slot = 0
     for name, model, ppm, *rest in items:
         cells = []
-        yaws = rest[0] if rest else [2 * math.pi * k / DIRS for k in range(DIRS)]
+        yaws = rest[0] if rest else [2 * math.pi * k / dirs for k in range(dirs)]
         for yaw in yaws:
             V, C = model.mesh(yaw)
             tri = V.reshape(-1, 3, 3)
@@ -704,8 +833,10 @@ def render_sheet(items, view, cell=CELL):
         atlas[name] = {"ppm": ppm, "cells": cells}
     ctx.scissor = None
     raw = np.frombuffer(fbo.read(components=4, alignment=1), "u1").reshape(n, n, 4)[::-1]
-    img = Image.fromarray(raw[..., :3].copy()).resize((SHEET, SHEET), Image.LANCZOS)
-    mask = Image.fromarray(raw[..., 3].copy()).resize((SHEET, SHEET), Image.BILINEAR)
+    if raw_out is not None:
+        raw_out.append(raw.copy())
+    img = Image.fromarray(raw[..., :3].copy()).resize((sheet, sheet), Image.LANCZOS)
+    mask = Image.fromarray(raw[..., 3].copy()).resize((sheet, sheet), Image.BILINEAR)
     ctx.release()
     return img, mask, atlas
 
@@ -798,6 +929,45 @@ def cut(painted, mask, render):
     return Image.fromarray(np.dstack([rgb.astype("u1"), a]), "RGBA")
 
 
+def pixel_art(raw, size):
+    """Supersampled RGBA render (transparent black background) -> crisp pixel-art sprites, the same in every
+    direction (no painter: it redraws each direction its own way, and a car changes model as it turns).
+    Box-filtered down, hard alpha, a dark outline round the silhouette and darker lines where faces meet."""
+    n = raw.shape[0]
+    f = n // size
+    a4 = raw.reshape(size, f, size, f, 4).astype("f4").mean(axis=(1, 3)) / 255.0
+    alpha = a4[..., 3]
+    rgb = a4[..., :3] / np.maximum(alpha, 1e-4)[..., None]
+    solid = alpha > 0.45
+    lum = rgb @ np.asarray([0.3, 0.59, 0.11], "f4")
+
+    def shift(x, dy, dx, fill):
+        o = np.full_like(x, fill)
+        ys = slice(max(dy, 0), size + min(dy, 0)); yd = slice(max(-dy, 0), size + min(-dy, 0))
+        xs = slice(max(dx, 0), size + min(dx, 0)); xd = slice(max(-dx, 0), size + min(-dx, 0))
+        o[yd, xd] = x[ys, xs]
+        return o
+
+    out = rgb.copy()
+    # inner lines: a pixel noticeably darker than a neighbour across a face edge gets darker still
+    edge = np.zeros_like(solid)
+    for dy, dx in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+        nl, ns = shift(lum, dy, dx, 0.0), shift(solid, dy, dx, False)
+        edge |= ns & (nl - lum > 0.12)
+    out[edge & solid] *= 0.78
+    # outline: transparent pixels touching the sprite, the colour of the sprite there, much darker
+    ring = np.zeros_like(solid)
+    acc = np.zeros_like(rgb); cnt = np.zeros(solid.shape, "f4")
+    for dy, dx in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+        ns = shift(solid, dy, dx, False)
+        ring |= ns & ~solid
+        acc += shift(out, dy, dx, 0.0) * ns[..., None]; cnt += ns
+    col = acc / np.maximum(cnt, 1)[..., None]
+    out = np.where(ring[..., None], col * 0.32 + 0.03, out)
+    a = (solid | ring).astype("u1") * 255
+    return Image.fromarray(np.dstack([(np.clip(out, 0, 1) * 255).astype("u1"), a]), "RGBA")
+
+
 def prompt_for(name):
     """The painting prompt of the sheet whose first sprite is `name`."""
     for prefix, pr in (("elephant_", PROMPT_ELEPHANT), ("ship_belem", PROMPT_BELEM), ("boat_", PROMPT_BOAT), ("ship_", PROMPT_BOAT), ("heli", PROMPT_HELI), ("plane", PROMPT_PLANE), ("train", PROMPT_TRAIN), ("ems_", PROMPT_FLEET),
@@ -807,7 +977,16 @@ def prompt_for(name):
     return PROMPT
 
 
+CLEAN_DIRS = 64
+CLEAN = ("car_", "bus", "tram_", "navibus", "bike_", "heli_", "ems_", "van_delivery", "truck_")
+
+
 def main(argv):
+    """Two kinds of sheets:
+    - clean: everything that turns while you watch it (cars, vans, buses, trams, bikes, the helicopter) in 64
+      directions, drawn straight from the 3D models as pixel art, so it looks the same at every angle;
+    - painted: people, planes, trains, boats, the elephant: 16 directions repainted by the tiles' painter, the
+      painting cached as out/sprites/hH/paint_<first sprite>.png."""
     h = int(argv[0]) if argv else 0
     what = argv[1] if len(argv) > 1 else "all"
     view = geo.View(h)
@@ -815,39 +994,42 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    LATER = ("elephant_", "walker", "bike", "heli", "plane", "train", "ems_", "van_delivery", "truck_", "car_taxi", "car_teal", "boat_", "ship_", "down_")
-    vehicles = [it for it in items if not it[0].startswith(LATER)]
-    people = [it for it in items if it[0].startswith(("walker", "bike"))]
-    aircraft = [it for it in items if it[0].startswith("heli")]
-    big = [it for it in items if it[0].startswith(("plane", "train"))]
-    # sheets keep their numbers (paint_N.png caches): new groups go after the existing ones
-    batches = [(vehicles[s:s + 4], CELL) for s in range(0, len(vehicles), 4)]
-    batches += [(people[s:s + 16], 64) for s in range(0, len(people), 16)]
-    batches += [(aircraft[s:s + 4], CELL) for s in range(0, len(aircraft), 4)]
-    batches += [([it], 256) for it in big]
-    fleet = [it for it in items if it[0].startswith(("ems_", "van_delivery", "truck_", "car_taxi", "car_teal"))]
-    batches += [(fleet[s:s + 4], CELL) for s in range(0, len(fleet), 4)]
-    boats = [it for it in items if it[0].startswith("boat_")]
-    batches += [([it], 256) for it in boats]
-    batches += [([it], SHEET) for it in items if it[0].startswith("ship_")]
-    batches += [([it], 256) for it in items if it[0].startswith("elephant_")]
-    batches += [([it for it in items if it[0].startswith("down_")], 64)]
+    clean = [it for it in items if it[0].startswith(CLEAN)]
+    painted = [it for it in items if not it[0].startswith(CLEAN)]
+    big = 2048
+    bikes = [it for it in clean if it[0].startswith("bike_")]
+    rest = [it for it in clean if not it[0].startswith("bike_")]
+    batches = [(rest[s:s + 4], CELL, big, CLEAN_DIRS) for s in range(0, len(rest), 4)]
+    batches += [(bikes, 64, big, CLEAN_DIRS)]
+    walkers = [it for it in painted if it[0].startswith("walker")]
+    batches += [(walkers[s:s + 16], 64, SHEET, DIRS) for s in range(0, len(walkers), 16)]
+    batches += [([it], 256, SHEET, DIRS) for it in painted if it[0].startswith(("plane", "train", "boat_", "elephant_"))]
+    batches += [([it], SHEET, SHEET, DIRS) for it in painted if it[0].startswith("ship_")]
+    batches += [([it for it in painted if it[0].startswith("down_")], 64, SHEET, DIRS)]
     atlas = {"dirs": DIRS, "sheets": []}
-    for k, (batch, cell) in enumerate(batches):
-        img, mask, entries = render_sheet(batch, view, cell)
-        img.save(work / f"render_{k}.png"); mask.save(work / f"mask_{k}.png")
-        pfile = work / f"paint_{k}.png"
-        if what in ("paint", "all") or pfile.exists():
-            if not pfile.exists() and batch[0][0].startswith("elephant_"):
-                paint_cells(img, entries, PROMPT_ELEPHANT).save(pfile)
-            if not pfile.exists():
-                pr = prompt_for(batch[0][0])
-                # seeds picked by eye: 3 gave the cleanest helicopters, 7 planes and trains without stray people
-                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET, PROMPT_BOAT, PROMPT_BELEM, PROMPT_ELEPHANT) else 1
-                paint(img, prompt=pr, seed=seed).save(pfile)
-            sprite = cut(Image.open(pfile), mask, img)
+    for f in out.glob("sheet_*.png"):
+        f.unlink()
+    for k, (batch, cell, size, dirs) in enumerate(batches):
+        first = batch[0][0]
+        if dirs == CLEAN_DIRS:
+            raw = []
+            img, mask, entries = render_sheet(batch, view, cell, size, dirs, raw)
+            sprite = pixel_art(raw[0], size)
         else:
-            sprite = cut(img, mask, img)
+            img, mask, entries = render_sheet(batch, view, cell, size, dirs)
+            img.save(work / f"render_{first}.png"); mask.save(work / f"mask_{first}.png")
+            pfile = work / f"paint_{first}.png"
+            if what in ("paint", "all") or pfile.exists():
+                if not pfile.exists() and first.startswith("elephant_"):
+                    paint_cells(img, entries, PROMPT_ELEPHANT).save(pfile)
+                if not pfile.exists():
+                    pr = prompt_for(first)
+                    # seeds picked by eye: 7 gave planes and trains without stray people
+                    seed = 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN, PROMPT_FLEET, PROMPT_BOAT, PROMPT_BELEM, PROMPT_ELEPHANT) else 1
+                    paint(img, prompt=pr, seed=seed).save(pfile)
+                sprite = cut(Image.open(pfile), mask, img)
+            else:
+                sprite = cut(img, mask, img)
         sprite.save(out / f"sheet_{k}.png", optimize=True)
         for name, e in entries.items():
             e["sheet"] = k

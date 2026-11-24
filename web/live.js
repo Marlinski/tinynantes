@@ -458,6 +458,7 @@ async function loadSprites() {
   try {
     const a = await getJSON(`data/sprites/h${TN.H}/atlas.json`);
     sprites.sheets = a.sheets.map((f) => { const im = new Image(); im.src = `data/sprites/h${TN.H}/${f}${TN.v}`; return im; });
+    for (const [n, e] of Object.entries(a)) if (/^(walker|down)_/.test(n)) e.person = true;
     sprites.atlas = a;
   } catch { /* no sprites: box models */ }
 }
@@ -474,15 +475,15 @@ function sprite(name, x, y, z, ang, key, opt) {
   if (!e) return false;
   const im = sprites.sheets[e.sheet];
   if (!im?.complete || !im.naturalWidth) return false;
-  const f = ang / (2 * Math.PI) * A.dirs;
-  let k = ((Math.round(f) % A.dirs) + A.dirs) % A.dirs;
-  const one = e.cells.length === 1;
+  const N = e.cells.length, one = N === 1;                         // 64 directions (vehicles), 16 (people, big things)
+  const f = ang / (2 * Math.PI) * N;
+  let k = ((Math.round(f) % N) + N) % N;
   if (one) k = 0;                                                   // a moored ship: drawn in its one real heading
   else if (key != null) {
     const prev = spriteDir.get(key);
-    if (prev != null) {
-      let dd = f - prev; dd -= Math.round(dd / A.dirs) * A.dirs;      // signed distance in directions
-      if (Math.abs(dd) < 0.6) k = prev;                                // stay until past the boundary (no flicker)
+    if (prev != null && prev < N) {
+      let dd = f - prev; dd -= Math.round(dd / N) * N;              // signed distance in directions
+      if (Math.abs(dd) < 0.6) k = prev;                              // stay until past the boundary (no flicker)
     }
     spriteDir.set(key, k);
     if (spriteDir.size > 20000) spriteDir.clear();
@@ -491,10 +492,11 @@ function sprite(name, x, y, z, ang, key, opt) {
   const sc = TN.view.s * TN.dpr / e.ppm * (opt?.scale || 1);
   const [X, Y] = toCanvas(...project(x, y, z));
   ctx.imageSmoothingEnabled = sc < 1;
-  // Sprites exist in A.dirs headings only (every 22.5°). The rest of the way to the true heading is a turn of the
-  // ground plane by d, as the camera sees it: M = P·R(d)·P⁻¹ (P: ground metres -> screen), applied about the anchor.
-  // The footprint then points exactly where the vehicle goes, whatever the direction; heights shear a little (≤13°).
-  let d = one ? 0 : ang - k * 2 * Math.PI / A.dirs;
+  // Vehicles have 64 headings (5.6° apart): drawn as they are, crisp, never distorted. The big 16-heading things
+  // (planes, trains, boats) turn the rest of the way by a turn of the ground plane by d, as the camera sees it:
+  // M = P·R(d)·P⁻¹ (P: ground metres -> screen), applied about the anchor; heights shear a little (≤13°).
+  // People (16 headings too) are never sheared: a figure leaning 10° looks wrong, 11° off course does not.
+  let d = one || N >= 64 || e.person ? 0 : ang - k * 2 * Math.PI / N;
   d = Math.atan2(Math.sin(d), Math.cos(d));
   if (opt?.rot || Math.abs(d) > 0.004) {
     ctx.save(); ctx.translate(X, Y);
@@ -968,6 +970,7 @@ function downed(x, y, z, a, col) {                                  // someone l
   box(x + Math.cos(a) * 0.95, y + Math.sin(a) * 0.95, z, a, 0.3, 0.3, 0.25, "#e0b48a", "#c9986c", OUTLINE);
 }
 function towTruck(x, y, z, a, loaded, now) {
+  if (sprite(loaded ? "ems_tow_loaded" : "ems_tow", x, y, z, a, null)) return;
   const c = Math.cos(a), s = Math.sin(a);
   box(x + c * 2.2, y + s * 2.2, z + 0.3, a, 2.0, 2.2, 2.2, "#f2a900", "#c98a00", OUTLINE);                   // cab
   box(x - c * 1.0, y - s * 1.0, z + 0.3, a, 4.4, 2.3, 0.5, "#555b61", "#3e4348", OUTLINE);                  // flat bed
@@ -977,6 +980,11 @@ function towTruck(x, y, z, a, loaded, now) {
 }
 function sweeper(x, y, z, a, now) {
   const c = Math.cos(a), s = Math.sin(a);
+  if (sprite("ems_sweeper", x, y, z, a, null)) {
+    const sp = now * 12;                                            // the side brushes spin
+    for (const side of [-1, 1]) box(x + c * 2.75 - s * side * 0.95, y + s * 2.75 + c * side * 0.95, z, sp + side, 0.6, 0.6, 0.12, "#d9c27a", "#a08a40");
+    return;
+  }
   box(x + c * 1.6, y + s * 1.6, z + 0.3, a, 2.0, 2.0, 2.0, "#f4f4f0", "#9fd36b", OUTLINE);                  // cab
   box(x - c * 1.2, y - s * 1.2, z + 0.3, a, 3.2, 2.1, 1.9, "#7bbf3a", "#5c9a26", OUTLINE);                  // tank
   const sp = now * 12;                                                                                         // brushes
