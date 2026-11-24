@@ -169,6 +169,40 @@ def navibus():
     return m
 
 
+def person(coat, legs=(0.18, 0.2, 0.26), phase=0.0, bike=False, skin=(0.93, 0.76, 0.62), hair=(0.25, 0.17, 0.1)):
+    """A walker (legs apart by `phase`) or a cyclist. Slightly larger than life (x1.6) so they read on the map."""
+    m = Model()
+    K = 1.6
+    if bike:
+        frame = (0.12, 0.13, 0.14)
+        m.wheel(-0.55 * K, 0, r=0.33 * K, w=0.05 * K, col=frame)
+        m.wheel(0.55 * K, 0, r=0.33 * K, w=0.05 * K, col=frame)
+        m.box(-0.5 * K, 0.5 * K, -0.03 * K, 0.03 * K, 0.33 * K, 0.42 * K, frame)
+        m.box(0.42 * K, 0.5 * K, -0.25 * K, 0.25 * K, 0.85 * K, 0.9 * K, frame)                         # handlebar
+        z0 = 0.5 * K
+        m.box(-0.2 * K, 0.0, -0.09 * K, 0.09 * K, z0, z0 + 0.42 * K, legs)                               # legs on pedals
+    else:
+        z0 = 0.0
+        for side, sgn in ((-1, 1), (1, -1)):
+            dx = sgn * phase * 0.16 * K
+            m.box(dx - 0.07 * K, dx + 0.07 * K, side * 0.11 * K - 0.06 * K, side * 0.11 * K + 0.06 * K, 0, 0.82 * K, legs)
+            m.box(dx - 0.05 * K, dx + 0.11 * K, side * 0.11 * K - 0.06 * K, side * 0.11 * K + 0.06 * K, 0, 0.07 * K, DARK)  # shoe
+    zt = z0 + (0.82 * K if not bike else 0.42 * K)
+    lean = 0.12 * K if bike else 0.0
+    m.box(-0.11 * K + lean, 0.11 * K + lean, -0.2 * K, 0.2 * K, zt, zt + 0.6 * K, coat)                    # torso
+    for side in (-1, 1):                                                                                     # arms
+        dx = (-side * phase * 0.12 * K) if not bike else 0.2 * K
+        m.box(dx - 0.05 * K + lean, dx + 0.05 * K + lean, side * 0.25 * K - 0.05 * K, side * 0.25 * K + 0.05 * K,
+              zt + 0.1 * K, zt + 0.58 * K, coat)
+    m.box(-0.09 * K + lean, 0.09 * K + lean, -0.09 * K, 0.09 * K, zt + 0.6 * K, zt + 0.82 * K, skin, front=skin)  # head
+    m.box(-0.1 * K + lean, 0.07 * K + lean, -0.1 * K, 0.1 * K, zt + 0.76 * K, zt + 0.86 * K, hair)          # hair
+    return m
+
+
+COATS = [(0.72, 0.18, 0.16), (0.17, 0.38, 0.6), (0.85, 0.62, 0.2), (0.25, 0.45, 0.3), (0.42, 0.3, 0.6), (0.86, 0.84, 0.8),
+         (0.16, 0.17, 0.2), (0.75, 0.42, 0.52)]
+HAIRS = [(0.25, 0.17, 0.1), (0.1, 0.08, 0.07), (0.75, 0.6, 0.3), (0.55, 0.3, 0.15)]
+
 CAR_COLORS = {"white": (0.9, 0.9, 0.88), "black": (0.15, 0.16, 0.18), "grey": (0.58, 0.61, 0.65), "red": (0.72, 0.15, 0.14),
               "blue": (0.17, 0.33, 0.56), "silver": (0.78, 0.79, 0.8), "green": (0.28, 0.38, 0.25), "yellow": (0.85, 0.66, 0.2)}
 CAR_KINDS = ["hatch", "sedan", "suv", "van"]
@@ -185,6 +219,12 @@ def catalogue():
     out.append(("tram_head", tram(True), 9.0))
     out.append(("tram_mid", tram(False), 9.0))
     out.append(("navibus", navibus(), 4.8))
+    # people: 8 coats x 2 walking phases, and 8 cyclists (one sheet of 16 directions x ... rows)
+    for k, coat in enumerate(COATS):
+        for ph in (0, 1):
+            out.append((f"walker_{k}_{ph}", person(coat, phase=(1.0 if ph else -1.0), hair=HAIRS[k % 4]), 22.0))
+    for k, coat in enumerate(COATS):
+        out.append((f"bike_{k}", person(coat, bike=True, hair=HAIRS[k % 4]), 16.0))
     return out
 
 
@@ -213,7 +253,7 @@ void main() {
 """
 
 
-def render_sheet(items, view):
+def render_sheet(items, view, cell=CELL):
     """items: [(name, model, ppm)]; each gets one row of 16 directions (two rows of 8 cells). Returns the
     RGB sheet, the mask and the atlas entries."""
     r, d, b = view.axes
@@ -226,7 +266,7 @@ def render_sheet(items, view):
     fbo.use(); ctx.enable(moderngl.DEPTH_TEST)
     fbo.clear(*[c / 255 for c in BG], 0.0)
     atlas = {}
-    per_row = SHEET // CELL
+    per_row = SHEET // cell
     slot = 0
     for name, model, ppm in items:
         cells = []
@@ -240,15 +280,15 @@ def render_sheet(items, view):
             flip = (nrm @ np.asarray(b, "f4")) < 0
             nrm[flip] *= -1
             N = np.repeat(nrm, 3, axis=0).astype("f4")
-            cx, cy = (slot % per_row) * CELL, (slot // per_row) * CELL
-            ax, ay = cx + CELL / 2, cy + CELL * 0.62          # where the vehicle's ground centre lands
+            cx, cy = (slot % per_row) * cell, (slot // per_row) * cell
+            ax, ay = cx + cell / 2, cy + cell * 0.7           # where the ground centre lands
             prog["u_cell"].value = (ax * SS, ay * SS, ppm * SS, 0.0)
             vbo = ctx.buffer(np.hstack([V, C, N]).astype("f4").tobytes())
             vao = ctx.vertex_array(prog, [(vbo, "3f 3f 3f", "in_p", "in_c", "in_n")])
-            ctx.scissor = (int(cx * SS), int(n - (cy + CELL) * SS), CELL * SS, CELL * SS)
+            ctx.scissor = (int(cx * SS), int(n - (cy + cell) * SS), cell * SS, cell * SS)
             vao.render()
             vao.release(); vbo.release()
-            cells.append([cx, cy, CELL, CELL, ax - cx, ay - cy])
+            cells.append([cx, cy, cell, cell, ax - cx, ay - cy])
             slot += 1
         atlas[name] = {"ppm": ppm, "cells": cells}
     ctx.scissor = None
@@ -266,10 +306,19 @@ PROMPT = ("Repaint these 3D vehicle renders as detailed isometric pixel-art vehi
           "Keep the plain grey background. Do not add or remove anything.")
 
 
-def paint(img, seed=1):
+PROMPT_WALKERS = ("Repaint these 3D renders of small pedestrians as detailed isometric pixel-art people walking, "
+                  "in the same style as a pixel-art city map. Keep every person exactly where it is, with the same pose, "
+                  "size, direction and clothes colours. Nobody rides anything. Keep the plain grey background. "
+                  "Do not add or remove anything.")
+PROMPT_BIKES = ("Repaint these 3D renders of cyclists as detailed isometric pixel-art people riding bicycles, in the same "
+                "style as a pixel-art city map. Keep every cyclist exactly where it is, with the same size, direction "
+                "and clothes colours. Keep the plain grey background. Do not add or remove anything.")
+
+
+def paint(img, seed=1, prompt=PROMPT):
     from .stylize import load_env, stylize          # same painter as the tiles
     load_env()
-    return stylize(img, model="9b", seed=seed, prompt=PROMPT)
+    return stylize(img, model="9b", seed=seed, prompt=prompt)
 
 
 def cut(painted, mask, render):
@@ -292,16 +341,19 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    per_sheet = (SHEET // CELL) ** 2 // DIRS               # 4 vehicles per sheet
+    vehicles = [it for it in items if not it[0].startswith(("walker", "bike"))]
+    people = [it for it in items if it[0].startswith(("walker", "bike"))]
+    batches = [(vehicles[s:s + 4], CELL) for s in range(0, len(vehicles), 4)]
+    batches += [(people[s:s + 16], 64) for s in range(0, len(people), 16)]
     atlas = {"dirs": DIRS, "sheets": []}
-    for s in range(0, len(items), per_sheet):
-        k = s // per_sheet
-        img, mask, entries = render_sheet(items[s:s + per_sheet], view)
+    for k, (batch, cell) in enumerate(batches):
+        img, mask, entries = render_sheet(batch, view, cell)
         img.save(work / f"render_{k}.png"); mask.save(work / f"mask_{k}.png")
-        if what in ("paint", "all"):
-            pfile = work / f"paint_{k}.png"
+        pfile = work / f"paint_{k}.png"
+        if what in ("paint", "all") or pfile.exists():
             if not pfile.exists():
-                paint(img).save(pfile)
+                pr = PROMPT if cell == CELL else PROMPT_BIKES if batch[0][0].startswith("bike") else PROMPT_WALKERS
+                paint(img, prompt=pr).save(pfile)
             sprite = cut(Image.open(pfile), mask, img)
         else:
             sprite = cut(img, mask, img)

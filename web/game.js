@@ -501,7 +501,11 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   const [sx, sy] = live.project(x, y, z), col = hslHex(o.color || "#e8577a"), K = SPRITE;
   const items = [];
   if (mode === "tram" || mode === "bus" || mode === "navibus") return items;    // inside the vehicle
+  const hsh = [...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
+  const step = Math.floor(performance.now() / 1000 * 2.2) % 2;
+  const spr = mode === "car" ? live.SPRITE_CARS[hsh % 8] : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;
   items.push({ sx, sy, h: 2 * K, draw: () => {
+    if (live.sprite(spr, x, y, z, a)) return;
     if (mode === "car") live.box(x, y, z + 0.2, a, 4.3, 1.8, 1.45, live.shade(col, 1.1), col, "rgba(20,24,28,.6)");
     else {
       if (mode === "bike") live.box(x, y, z + 0.3 * K, a, 1.7 * K * 0.8, 0.12 * K, 0.5 * K, "#2b2f36", "#2b2f36");

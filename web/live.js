@@ -20,7 +20,7 @@ const hgt = new Map();
 let hits = [];                                // clickable things drawn this frame: {x, y, r, open}
 
 export const live = {
-  world, project, toCanvas, zAt, along, vehiclePose, occluded, box, label, shade,
+  world, project, toCanvas, zAt, along, vehiclePose, occluded, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
   get vehicles() { return vehicles; }, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
   now: () => Date.now() / 1000 + clockSkew,
@@ -395,7 +395,8 @@ function inhabitantItems(t, rect) {
       if (!sprite(SPRITE_CARS[c % SPRITE_CARS.length], x, y, z, a)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
     else if (TN.view.s >= 1.6 || TN.playing) {
       const col = CLOTHES[c % CLOTHES.length], phase = now * v * 5 + id;
-      out.push({ sx, sy, h: 2, hit, draw: () => personModel(x, y, z, a, col, phase, k === 2) });
+      const name = k === 2 ? `bike_${c % 8}` : `walker_${c % 8}_${v > 0.2 ? Math.floor(now * v * 1.6 + id) % 2 : 0}`;
+      out.push({ sx, sy, h: 2, hit, draw: () => { if (!sprite(name, x, y, z, a)) personModel(x, y, z, a, col, phase, k === 2); } });
     }
   }
   return out;
