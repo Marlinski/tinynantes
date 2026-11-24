@@ -59,6 +59,25 @@ fn density(name: &str) -> f64 {
     }
 }
 
+/// The feminine of a job title ("technicien aéronautique" -> "technicienne aéronautique").
+pub fn feminine(job: &str) -> String {
+    let (w, rest) = job.split_once(' ').map(|(a, b)| (a, format!(" {b}"))).unwrap_or((job, String::new()));
+    let f = match w {
+        "chercheur" => "chercheuse".into(), "vendeur" => "vendeuse".into(), "serveur" => "serveuse".into(),
+        "coiffeur" => "coiffeuse".into(), "danseur" => "danseuse".into(), "chanteur" => "chanteuse".into(),
+        "acteur" | "directeur" | "animateur" | "éducateur" | "rédacteur" | "conducteur" | "illustrateur" | "agriculteur" =>
+            format!("{}rice", &w[..w.len() - 3]),
+        "ingénieur" | "professeur" | "docteur" | "auteur" | "chauffeur" => format!("{w}e"),
+        w if w.ends_with("ien") => format!("{w}ne"),
+        w if w.ends_with("ier") => format!("{}ière", &w[..w.len() - 3]),
+        w if w.ends_with("eur") => format!("{}euse", &w[..w.len() - 3]),
+        w if w.ends_with('é') || w.ends_with("ant") || w.ends_with("ent") || w.ends_with("ais") || w.ends_with("ot") => format!("{w}e"),
+        w if w.ends_with("if") => format!("{}ive", &w[..w.len() - 2]),
+        w => w.to_string(),
+    };
+    format!("{f}{rest}")
+}
+
 /// French contractions after a place name was dropped into a sentence ("à Le Lieu Unique" -> "au Lieu Unique").
 pub fn contract(s: &str) -> String {
     s.replace("à Le ", "au ").replace("à Les ", "aux ").replace("au Le ", "au ").replace("au La ", "à La ")
@@ -359,6 +378,7 @@ pub fn persona(q: &Quartiers, i: PersonaInput) -> Persona {
         let j = quart.and_then(|qq| weighted(&mut rng, &qq.jobs)).unwrap_or("employé").to_string();
         if j == "retraité" && age < 58 { "employé".into() } else if j == "étudiant" && age > 30 { "enseignant".into() } else { j }
     };
+    let job = if female { feminine(&job) } else { job };
     let archetype = if i.march.is_none() && rng.gen_bool(0.08) {
         let (a, b) = pick(&mut rng, ARCHETYPES);
         Some((a.to_string(), b.to_string()))

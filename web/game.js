@@ -676,7 +676,7 @@ async function talkSay(text) {
     if (!r.ok) { talkLine("", d.error || "…", "sys"); if (r.status !== 429) talking = null; return; }
     t.name = d.name; if ($("talkWho")) $("talkWho").textContent = d.name;
     talkLine(`${d.name.split(" ")[0]} :`, d.text, "them");
-    if (d.ended) { talkLine("", `${d.name.split(" ")[0]} s'en va.`, "sys"); talking = null; $("talkForm")?.remove(); }
+    if (d.ended) { talkLine("", `${d.name.split(" ")[0]} ${d.snubbed ? "se détourne et s'en va." : "s'en va."}`, "sys"); talking = null; $("talkForm")?.remove(); }
   } catch { talkLine("", "…pas de réponse.", "sys"); }
   finally { t.busy = false; if ($("talkIn")) { $("talkIn").disabled = false; $("talkIn").focus(); } }
 }
