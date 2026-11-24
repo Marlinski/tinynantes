@@ -72,7 +72,7 @@ function exists(L, i, j) { return man.sets[L].has(`${i}_${j}`); }
 
 // ---------------------------------------------------------------- drawing
 function resize() {
-  dpr = Math.min(devicePixelRatio || 1, 2);
+  dpr = TN.lite ? 1 : Math.min(devicePixelRatio || 1, 2);
   for (const c of [cv, lab]) { c.width = Math.round(innerWidth * dpr); c.height = Math.round(innerHeight * dpr); }
   minS = Math.min(innerWidth / (man.box[2] - man.box[0]), innerHeight / (man.box[3] - man.box[1])) * 0.8;
   dirty = true;
@@ -326,6 +326,43 @@ $("share").onclick = async () => {
 };
 $("info").onclick = () => { $("about").hidden = !$("about").hidden; };
 $("about").querySelector(".close").onclick = () => { $("about").hidden = true; };
+// ---------------------------------------------------------------- light mode, for modest computers
+// No blur effects (tilt-shift, frosted panels), 1x resolution, live layer at 30 fps, light and weather at 10 fps.
+// On by ?lite (or ?lite=0 to force it off), remembered per browser, and switched on by itself when the page runs
+// below ~30 fps for a few seconds. L toggles it.
+function setLite(on, why) {
+  TN.lite = on;
+  document.documentElement.classList.toggle("lite", on);
+  try { localStorage.setItem("tn-lite", on ? "1" : "0"); } catch { /* private mode */ }
+  if (man) resize();
+  if (why) toast(why);
+}
+{
+  const q = new URLSearchParams(location.search).get("lite");
+  let saved = null;
+  try { saved = localStorage.getItem("tn-lite"); } catch { /* none */ }
+  if (q !== null) setLite(q !== "0");
+  else if (saved !== null) setLite(saved === "1");
+  else {
+    // watch the first seconds: a slow machine gets the light mode without asking
+    const gaps = []; let prev = 0, t0 = 0;
+    const probe = (t) => {
+      if (!man) { requestAnimationFrame(probe); return; }
+      if (!t0) t0 = t + 2000;                               // let the first tiles land
+      if (t > t0 && prev && !document.hidden) gaps.push(t - prev);
+      prev = t;
+      if (gaps.length < 90) { requestAnimationFrame(probe); return; }
+      gaps.sort((a, b) => a - b);
+      if (gaps[45] > 34) setLite(true, "Mode léger activé pour fluidifier (L pour changer)");
+    };
+    requestAnimationFrame(probe);
+  }
+}
+addEventListener("keydown", (e) => {
+  if (e.code !== "KeyL" || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || TN.playing) return;
+  setLite(!TN.lite, TN.lite ? "Mode normal" : "Mode léger : moins d'effets, plus fluide");
+});
+
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(t._t); t._t = setTimeout(() => (t.hidden = true), 1600); }
 
 // ---------------------------------------------------------------- minimap

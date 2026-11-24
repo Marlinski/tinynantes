@@ -259,7 +259,9 @@ const mapCv = document.getElementById("map"), liveCv = document.getElementById("
 let last = performance.now(), lastFilter = "";
 function frame() {
   requestAnimationFrame(frame);
-  const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000);
+  const now = performance.now();
+  if (TN.lite && now - last < 95) return;                     // light mode: light and weather at 10 fps
+  const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   const w = Math.round(innerWidth * TN.dpr), h = Math.round(innerHeight * TN.dpr);
   for (const c of [tint, fx]) if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }

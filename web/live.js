@@ -828,9 +828,12 @@ function pin(sx, sy, icon) {
 const inRect = (sx, sy, r) => sx >= r[0] && sx <= r[2] && sy >= r[1] && sy <= r[3];
 
 // ---------------------------------------------------------------- frame
-function frame() {
+let lastDraw = 0;
+function frame(now) {
   requestAnimationFrame(frame);
   if (!world.ready || !TN.man) return;
+  if (TN.lite && now - lastDraw < 31) return;               // light mode: 30 fps
+  lastDraw = now;
   const w = Math.round(innerWidth * TN.dpr), h = Math.round(innerHeight * TN.dpr);
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
   ctx.clearRect(0, 0, w, h);
