@@ -208,6 +208,122 @@ CAR_COLORS = {"white": (0.9, 0.9, 0.88), "black": (0.15, 0.16, 0.18), "grey": (0
 CAR_KINDS = ["hatch", "sedan", "suv", "van"]
 
 
+def helicopter(pitch_deg=0.0):
+    """A light twin helicopter (red, white belly stripe), centred on its length, without the main rotor (the
+    viewer spins that). pitch_deg > 0 = nose down, the attitude of forward flight."""
+    m = Model()
+    R, W, G2 = (0.78, 0.13, 0.12), (0.92, 0.92, 0.9), (0.82, 0.82, 0.8)
+    m.box(-1.6, 1.4, -0.8, 0.8, 0.55, 1.4, R, front=R, back=R)                     # cabin
+    m.box(-1.62, 1.42, -0.82, 0.82, 0.55, 0.78, W)                                 # belly stripe
+    m.box(-1.45, 1.1, -0.74, 0.74, 1.4, 2.0, R, taper=0.22)                        # cabin roof
+    m.box(-0.1, 1.2, -0.83, 0.83, 0.95, 1.65, GLASS)                               # side windows
+    m.box(1.3, 2.4, -0.72, 0.72, 0.62, 1.85, GLASS, front=GLASS, taper=0.42)       # nose canopy
+    m.box(-1.25, 0.45, -0.46, 0.46, 2.0, 2.45, G2, taper=0.12)                     # engine cowling
+    m.box(-0.12, 0.12, -0.12, 0.12, 2.45, 2.72, DARK)                              # mast
+    m.box(-0.32, 0.32, -0.32, 0.32, 2.72, 2.84, DARK)                              # hub
+    m.box(-5.0, -1.5, -0.24, 0.24, 1.2, 1.68, R, taper=0.06)                       # tail boom
+    m.box(-4.3, -3.9, -0.95, 0.95, 1.32, 1.42, R)                                  # stabiliser
+    m.box(-5.4, -4.8, -0.07, 0.07, 1.35, 2.75, R, taper=0.1)                       # fin
+    m.box(-5.25, -4.85, 0.08, 0.12, 1.55, 2.55, DARK)                              # tail rotor disc
+    for yy in (-0.95, 0.95):
+        m.box(-1.9, 1.9, yy - 0.06, yy + 0.06, 0.0, 0.1, DARK)                     # skids
+        for xx in (-1.0, 0.9):
+            m.box(xx, xx + 0.1, yy - 0.04, yy + 0.04, 0.1, 0.6, DARK)              # struts
+    p, cx, cz = math.radians(pitch_deg), -1.5, 1.2                                 # pitch about the middle
+    c, s_ = math.cos(p), math.sin(p)
+    def tf(v):
+        x, y, z = v[0] - cx, v[1], v[2] - cz
+        return (x * c + z * s_, y, -x * s_ + z * c + cz)
+    m.tris = [(tuple(tf(v) for v in tri), col) for tri, col in m.tris]
+    return m
+
+
+def _slab(m, pts, z0, z1, top, side):
+    """A flat prism over a ground polygon (wings, tailplanes): top face, bottom face and edges."""
+    n = len(pts)
+    lo = [(x, y, z0) for x, y in pts]; hi = [(x, y, z1) for x, y in pts]
+    for k in range(1, n - 1):
+        m.tris.append(((hi[0], hi[k], hi[k + 1]), top))
+        m.tris.append(((lo[0], lo[k + 1], lo[k]), side))
+    for k in range(n):
+        m.quad(lo[k], lo[(k + 1) % n], hi[(k + 1) % n], hi[k], side)
+
+
+def _fin(m, pts, y0, y1, col, side):
+    """A vertical flat prism (fins) over an (x, z) polygon, between y0 and y1."""
+    n = len(pts)
+    a = [(x, y0, z) for x, z in pts]; b = [(x, y1, z) for x, z in pts]
+    for k in range(1, n - 1):
+        m.tris.append(((a[0], a[k], a[k + 1]), side))
+        m.tris.append(((b[0], b[k + 1], b[k]), side))
+    for k in range(n):
+        m.quad(a[k], a[(k + 1) % n], b[(k + 1) % n], b[k], col)
+
+
+def airliner():
+    """A narrow-body jet (A320 class): 37 m long, 34 m span; z = 0 under the fuselage."""
+    m = Model()
+    W, G, B, E = (0.94, 0.94, 0.93), (0.72, 0.74, 0.77), (0.16, 0.3, 0.6), (0.6, 0.62, 0.66)
+    m.box(-15.0, 14.0, -1.95, 1.95, 0.0, 4.0, W, taper=0.35)                          # fuselage
+    m.box(14.0, 18.5, -1.75, 1.75, 0.5, 3.6, W, front=W, taper=1.1)                    # nose
+    m.box(16.0, 17.6, -1.5, 1.5, 2.6, 3.4, GLASS, front=GLASS, taper=0.3)              # cockpit windows
+    m.box(-19.5, -15.0, -1.4, 1.4, 1.2, 3.9, W, back=W, taper=0.6)                     # tail cone
+    m.box(-12.0, 12.0, -1.97, 1.97, 2.5, 2.8, GLASS)                                   # window line
+    m.box(-15.0, 14.0, -1.97, 1.97, 0.0, 0.9, B)                                       # belly band
+    for sgn in (-1, 1):
+        _slab(m, [(4.5, sgn * 1.9), (-1.5, sgn * 1.9), (-7.5, sgn * 17.0), (-5.6, sgn * 17.0)], 0.9, 1.3, G, E)
+        _slab(m, [(-15.5, sgn * 1.2), (-18.5, sgn * 1.2), (-21.0, sgn * 6.3), (-19.6, sgn * 6.3)], 3.4, 3.6, G, E)
+        y = sgn * 5.7
+        m.box(0.8, 5.2, y - 0.95, y + 0.95, -1.0, 0.9, E, front=DARK, taper=0.1)     # engines
+    _fin(m, [(-14.5, 3.8), (-19.8, 3.8), (-21.0, 11.2), (-18.8, 11.2)], -0.18, 0.18, B, B)
+    return m
+
+
+def regional():
+    """A high-wing turboprop (ATR 72 class): 27 m long and wide, T tail."""
+    m = Model()
+    W, G, B, E = (0.95, 0.95, 0.94), (0.74, 0.76, 0.79), (0.15, 0.45, 0.7), (0.55, 0.57, 0.6)
+    m.box(-10.0, 9.5, -1.4, 1.4, 0.0, 2.9, W, taper=0.25)                             # fuselage
+    m.box(9.5, 13.0, -1.25, 1.25, 0.3, 2.6, W, front=W, taper=0.9)                     # nose
+    m.box(11.0, 12.4, -1.05, 1.05, 1.9, 2.5, GLASS, front=GLASS, taper=0.2)
+    m.box(-14.0, -10.0, -1.0, 1.0, 1.0, 2.8, W, back=W, taper=0.5)                     # tail cone
+    m.box(-8.0, 8.0, -1.42, 1.42, 1.7, 1.95, GLASS)
+    m.box(-10.0, 9.5, -1.42, 1.42, 0.0, 0.6, B)
+    for sgn in (-1, 1):
+        _slab(m, [(3.0, sgn * 1.3), (0.6, sgn * 1.3), (-0.2, sgn * 13.5), (1.6, sgn * 13.5)], 2.9, 3.2, G, E)
+        y = sgn * 4.1
+        m.box(0.0, 4.6, y - 0.6, y + 0.6, 2.0, 3.1, E, front=DARK, taper=0.1)        # nacelles
+        m.box(4.6, 4.75, y - 1.8, y + 1.8, 2.5, 2.6, DARK)                             # propeller blur
+        m.box(4.6, 4.75, y - 0.1, y + 0.1, 0.8, 4.3, DARK)
+        _slab(m, [(-13.0, sgn * 0.2), (-15.2, sgn * 0.2), (-15.8, sgn * 3.9), (-14.5, sgn * 3.9)], 7.6, 7.8, G, E)
+    _fin(m, [(-10.5, 2.6), (-14.2, 2.6), (-15.5, 7.8), (-13.4, 7.8)], -0.15, 0.15, B, B)
+    return m
+
+
+def rail_car(livery, head=False, L=25.0):
+    """An SNCF coach (or power car with a nose when head), x forward; livery = (body, band, roof)."""
+    m = Model()
+    body, band, roof = livery
+    W, H = 2.9, 4.0
+    x1 = L / 2 - (5.0 if head else 0.0)
+    m.box(-L / 2, x1, -W / 2, W / 2, 0.5, 0.5 + H * 0.38, band, front=band, back=band)
+    m.box(-L / 2, x1, -W / 2, W / 2, 0.5 + H * 0.38, 0.5 + H * 0.68, body, GLASS if not head else body)
+    m.box(-L / 2, x1, -W / 2, W / 2, 0.5 + H * 0.68, 0.5 + H, roof, body, front=body, back=body, taper=0.15)
+    if head:
+        m.box(x1, L / 2, -W / 2, W / 2, 0.5, 0.5 + H * 0.38, band, front=band, taper=0.9)
+        m.box(x1, L / 2 - 1.4, -W / 2 + 0.1, W / 2 - 0.1, 0.5 + H * 0.38, 0.5 + H * 0.85, body, GLASS, front=GLASS, taper=1.2)
+        m.box(-L / 2 + 3, -L / 2 + 7, -0.4, 0.4, 0.5 + H, 0.5 + H + 0.5, DARK)       # pantograph base
+    for xx in (-L / 2 + 3, L / 2 - 3 - (2 if head else 0)):
+        m.box(xx - 1.4, xx + 1.4, -W / 2 + 0.2, W / 2 - 0.2, 0.0, 0.5, DARK)          # bogies
+    return m
+
+
+LIVERY_TGV = ((0.93, 0.92, 0.93), (0.45, 0.15, 0.4), (0.82, 0.82, 0.84))
+LIVERY_TER = ((0.94, 0.94, 0.92), (0.12, 0.42, 0.7), (0.78, 0.8, 0.82))
+
+HELI_PITCH = [-7.0, 0.0, 8.0, 16.0]        # nose up (braking), hover, cruising, full speed
+
+
 def catalogue():
     """(name, model, pixels per metre) -- vehicles of a sheet share a scale close to the map's, a bit larger."""
     out = []
@@ -225,6 +341,14 @@ def catalogue():
             out.append((f"walker_{k}_{ph}", person(coat, phase=(1.0 if ph else -1.0), hair=HAIRS[k % 4]), 22.0))
     for k, coat in enumerate(COATS):
         out.append((f"bike_{k}", person(coat, bike=True, hair=HAIRS[k % 4]), 16.0))
+    for k, p in enumerate(HELI_PITCH):
+        out.append((f"heli_{k}", helicopter(p), 13.5))
+    # big things: one per sheet (256 px cells)
+    out.append(("plane_jet", airliner(), 5.4))
+    out.append(("plane_prop", regional(), 7.0))
+    out.append(("train_tgv_head", rail_car(LIVERY_TGV, head=True), 7.5))
+    out.append(("train_tgv", rail_car(LIVERY_TGV), 7.5))
+    out.append(("train_ter", rail_car(LIVERY_TER), 7.5))
     return out
 
 
@@ -315,6 +439,22 @@ PROMPT_BIKES = ("Repaint these 3D renders of cyclists as detailed isometric pixe
                 "and clothes colours. Keep the plain grey background. Do not add or remove anything.")
 
 
+PROMPT_HELI = ("Repaint these 3D renders of a small red helicopter body as crisp isometric pixel-art sprites with dark "
+               "outlines, in the same style as a pixel-art city map. Keep every helicopter exactly where it is, with "
+               "the same shape, size, direction, tilt, colours and black landing skids. Do not draw any rotor blades. "
+               "Keep the plain grey background. Do not add or remove anything.")
+
+
+PROMPT_PLANE = ("Repaint these 3D renders of an airliner as crisp isometric pixel-art sprites with dark outlines, in the "
+                "same style as a pixel-art city map. Keep every aeroplane exactly where it is, with the same shape, size, "
+                "direction and colours. There are no people anywhere: draw only the aeroplanes. Keep the plain empty grey "
+                "background. Do not add or remove anything.")
+PROMPT_TRAIN = ("Repaint these 3D renders of a French train car as crisp isometric pixel-art sprites with dark outlines, in "
+                "the same style as a pixel-art city map. Keep every car exactly where it is, with the same shape, size, "
+                "direction and colours, windows along the sides. There are no people anywhere: draw only the train cars. "
+                "Keep the plain empty grey background. Do not add or remove anything.")
+
+
 def paint(img, seed=1, prompt=PROMPT):
     from .stylize import load_env, stylize          # same painter as the tiles
     load_env()
@@ -341,10 +481,15 @@ def main(argv):
     work = ROOT / "out" / "sprites" / f"h{h}"
     out.mkdir(parents=True, exist_ok=True); work.mkdir(parents=True, exist_ok=True)
     items = catalogue()
-    vehicles = [it for it in items if not it[0].startswith(("walker", "bike"))]
+    vehicles = [it for it in items if not it[0].startswith(("walker", "bike", "heli", "plane", "train"))]
     people = [it for it in items if it[0].startswith(("walker", "bike"))]
+    aircraft = [it for it in items if it[0].startswith("heli")]
+    big = [it for it in items if it[0].startswith(("plane", "train"))]
+    # sheets keep their numbers (paint_N.png caches): new groups go after the existing ones
     batches = [(vehicles[s:s + 4], CELL) for s in range(0, len(vehicles), 4)]
     batches += [(people[s:s + 16], 64) for s in range(0, len(people), 16)]
+    batches += [(aircraft[s:s + 4], CELL) for s in range(0, len(aircraft), 4)]
+    batches += [([it], 256) for it in big]
     atlas = {"dirs": DIRS, "sheets": []}
     for k, (batch, cell) in enumerate(batches):
         img, mask, entries = render_sheet(batch, view, cell)
@@ -352,8 +497,11 @@ def main(argv):
         pfile = work / f"paint_{k}.png"
         if what in ("paint", "all") or pfile.exists():
             if not pfile.exists():
-                pr = PROMPT if cell == CELL else PROMPT_BIKES if batch[0][0].startswith("bike") else PROMPT_WALKERS
-                paint(img, prompt=pr).save(pfile)
+                pr = (PROMPT_HELI if batch[0][0].startswith("heli") else PROMPT_PLANE if batch[0][0].startswith("plane")
+                      else PROMPT_TRAIN if batch[0][0].startswith("train") else PROMPT if cell == CELL else PROMPT_BIKES) if batch[0][0].startswith("bike") else PROMPT_WALKERS
+                # seeds picked by eye: 3 gave the cleanest helicopters, 7 planes and trains without stray people
+                seed = 3 if pr is PROMPT_HELI else 7 if pr in (PROMPT_PLANE, PROMPT_TRAIN) else 1
+                paint(img, prompt=pr, seed=seed).save(pfile)
             sprite = cut(Image.open(pfile), mask, img)
         else:
             sprite = cut(img, mask, img)

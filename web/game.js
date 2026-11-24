@@ -739,29 +739,59 @@ function flyHeli(ux, uy, dt) {
   me.v = Math.hypot(me.vx, me.vy);
   if (me.v > 1) { let da = Math.atan2(me.vy, me.vx) - me.a; da = Math.atan2(Math.sin(da), Math.cos(da)); me.a += da * Math.min(1, dt * 3); }
 }
-function heliModel(x, y, z, a, col, isMe) {
+// Attitude of a helicopter from how it moves (works the same for us and for other players): it pitches nose
+// down with speed and when it accelerates, nose up when it brakes, and banks into turns (lateral acceleration).
+const HELI_PITCH = [-7, 0, 8, 16];                                   // the painted attitudes (sprites heli_0..3)
+function heliAttitude(o, x, y, a) {
+  const t = performance.now() / 1000, st = o._att || (o._att = { x, y, a, t, v: 0, pitch: 0, roll: 0 });
+  const dt = Math.min(0.25, t - st.t);
+  if (dt > 0.001) {
+    const vx = (x - st.x) / dt, vy = (y - st.y) / dt, v = Math.hypot(vx, vy);
+    let da = a - st.a; da = Math.atan2(Math.sin(da), Math.cos(da));
+    const acc = (v - st.v) / dt, turn = da / dt;
+    const k = 1 - Math.exp(-dt * 2.5);
+    const pitch = Math.max(-9, Math.min(18, v / SPEED.heli * 13 + acc * 0.9));
+    const roll = Math.max(-28, Math.min(28, Math.atan(v * turn / 9.81) * 180 / Math.PI));
+    st.pitch += (pitch - st.pitch) * k; st.roll += (roll - st.roll) * k;
+    st.v += (v - st.v) * Math.min(1, dt * 6);
+    Object.assign(st, { x, y, a, t });
+  }
+  return st;
+}
+function heliModel(o, x, y, z, a, col, isMe) {
   const g = live.zAt(x, y), S = 2.2;                                // drawn larger than life (like people) to read on the map
-  const ca = Math.cos(a), sa = Math.sin(a);
-  const B = (dx, dy, dz, L, W, H, top, side) => live.box(x + (ca * dx - sa * dy) * S, y + (sa * dx + ca * dy) * S, z + dz * S, a, L * S, W * S, H * S, top, side);
+  const att = heliAttitude(o, x, y, a);
   const [gx, gy] = live.project(x, y, g), [ax, ay] = live.project(x, y, z);
+  // nearest painted attitude
+  let best = 0;
+  HELI_PITCH.forEach((p, k) => { if (Math.abs(p - att.pitch) < Math.abs(HELI_PITCH[best] - att.pitch)) best = k; });
+  // banking shows as a rotation on screen when the helicopter faces towards / away from the camera
+  const [dx, dy] = live.project(x + Math.cos(a), y + Math.sin(a), z).map((v, k) => v - [ax, ay][k]);
+  const facing = Math.abs(dy) / (Math.hypot(dx, dy) || 1);
+  const rot = att.roll * Math.PI / 180 * (0.25 + 0.75 * facing) * (dy > 0 ? -1 : 1);
+  const flying = z - g > 0.5;
   return [
-    { sx: gx, sy: gy, h: 0, draw: () => {                            // shadow on the ground
-      const c = live.ctx, [cx, cy] = live.toCanvas(gx, gy), s = TN.view.s * TN.dpr * S;
-      c.fillStyle = "rgba(0,0,0,0.22)"; c.beginPath(); c.ellipse(cx, cy, 4.5 * s, 2.3 * s, 0, 0, 7); c.fill(); } },
+    { sx: gx, sy: gy, h: 0, draw: () => {                            // shadow on the ground, smaller as it climbs
+      const c = live.ctx, [cx, cy] = live.toCanvas(gx, gy), s = TN.view.s * TN.dpr * S, f = Math.max(0.5, 1 - (z - g) / 300);
+      c.fillStyle = `rgba(0,0,0,${0.24 * f})`; c.beginPath(); c.ellipse(cx, cy, 5 * s * f, 2.4 * s * f, 0, 0, 7); c.fill(); } },
     { sx: ax, sy: ay, h: 3 * S, room: true, overlay: z - g > 12, draw: () => {
       const c = live.ctx;
-      B(-4.2, 0, 1.3, 5, 0.35, 0.35, "#e9e9e6", "#b7b9bb");           // tail boom
-      B(-6.5, 0, 1.3, 0.6, 0.12, 1.3, "#d8342c", "#a5261f");          // fin
-      for (const k of [-1, 1]) B(0, k * 0.9, 0, 3.6, 0.12, 0.12, "#333", "#222");   // skids
-      B(0, 0, 0.4, 4.2, 1.8, 1.7, "#f4f4f0", col);                    // cabin
-      B(1.3, 0, 1.0, 1.4, 1.7, 1.0, "#9fc4dc", "#5d86a3");            // canopy
-      B(0, 0, 2.1, 0.5, 0.5, 0.4, "#555", "#333");                    // mast
-      const [hx, hy] = live.toCanvas(...live.project(x, y, z + 2.55 * S)), sc = TN.view.s * TN.dpr * S, R = 5.4;
-      const t = performance.now() / 1000 * (z - g > 0.5 ? 24 : 6);
-      c.save(); c.translate(hx, hy); c.scale(1, 0.72);
-      c.fillStyle = "rgba(40,40,40,0.12)"; c.beginPath(); c.arc(0, 0, R * sc, 0, 7); c.fill();
-      c.strokeStyle = "rgba(30,30,30,0.85)"; c.lineWidth = Math.max(1.5, 0.3 * sc); c.lineCap = "round";
-      for (let k = 0; k < 2; k++) { const b = t + k * Math.PI / 2; c.beginPath(); c.moveTo(-Math.cos(b) * R * sc, -Math.sin(b) * R * sc); c.lineTo(Math.cos(b) * R * sc, Math.sin(b) * R * sc); c.stroke(); }
+      if (!live.sprite(`heli_${best}`, x, y, z, a, "h:" + (isMe ? "me" : o.name), { scale: S, rot })) return;
+      // main rotor: pixel blades over the hub. In the sprite model the hub sits 1.5 m ahead of and 1.64 m above
+      // the pitch pivot (1.2 m up), and the model is centred on the pivot (sprites.helicopter).
+      const p = HELI_PITCH[best] * Math.PI / 180, cp = Math.cos(p), sp = Math.sin(p);
+      const hubF = (1.5 * cp + 1.64 * sp) * S, hubZ = (-1.5 * sp + 1.64 * cp + 1.25) * S;
+      const [hx, hy] = live.toCanvas(...live.project(x + Math.cos(a) * hubF, y + Math.sin(a) * hubF, z + hubZ));
+      const sc = TN.view.s * TN.dpr * S, R = 5.2 * sc, px = Math.max(1, Math.round(0.32 * sc));
+      const spin = performance.now() / 1000 * (flying ? 26 : 5);
+      c.save(); c.translate(Math.round(hx), Math.round(hy)); c.rotate(rot);
+      c.fillStyle = "rgba(30,32,36,0.16)"; c.beginPath(); c.ellipse(0, 0, R, R * 0.7, 0, 0, 7); c.fill();
+      c.fillStyle = "rgba(28,30,34,0.9)";
+      for (let k = 0; k < 4; k++) {                                   // blades as runs of square pixels
+        const b = spin + k * Math.PI / 2, ux = Math.cos(b), uy = Math.sin(b) * 0.7;
+        for (let r = px; r < R; r += px) c.fillRect(Math.round(ux * r / px) * px - px / 2, Math.round(uy * r / px) * px - px / 2, px, px);
+      }
+      c.fillRect(-px, -px, 2 * px, 2 * px);
       c.restore();
     } },
   ];
@@ -783,7 +813,7 @@ function avatarItems(o, x, y, z, a, mode, name, isMe) {
   const [sx, sy] = live.project(x, y, z), col = hslHex(o.color || "#e8577a"), K = SPRITE;
   const items = [];
   if (mode === "tram" || mode === "bus" || mode === "navibus") return items;    // inside the vehicle
-  if (mode === "heli") items.push(...heliModel(x, y, z, a, col, isMe));
+  if (mode === "heli") items.push(...heliModel(o, x, y, z, a, col, isMe));
   const hsh = [...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
   const step = Math.floor(performance.now() / 1000 * 2.2) % 2;
   const spr = mode === "car" ? live.SPRITE_CARS[hsh % 8] : mode === "bike" ? `bike_${hsh % 8}` : `walker_${hsh % 8}_${(isMe ? me.v : 1) > 0.2 ? step : 0}`;

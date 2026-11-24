@@ -67,26 +67,40 @@ function grade(alt, s) {
 
 // ---------------------------------------------------------------- light sources
 let lamps = null;                                     // world points along the measured main roads
-// Street lighting: a warm strip along the middle of the roads (lamps on the side ended up inside houses on
-// narrow streets). Points every 6 m on the measured traffic sections, with their ground height.
+// Street lamps on the pavement of the measured traffic sections, every 26 m, alternating sides, 4.5 m from the
+// centre line (7 m put them in front gardens and houses on narrow streets).
 function buildLamps() {
   const secs = live.sections;
   if (!secs.length) return;
   lamps = [];
+  let side = 1;
   for (const s of secs) {
-    const line = [];
     let acc = 0;
     for (let k = 1; k < s.p.length; k++) {
       const [ax, ay] = s.p[k - 1], [bx, by] = s.p[k], L = Math.hypot(bx - ax, by - ay);
-      for (; acc < L; acc += 6) {
-        const f = acc / L, x = ax + (bx - ax) * f, y = ay + (by - ay) * f;
-        line.push([x, y, live.zAt(x, y)]);
+      for (; acc < L; acc += 26) {
+        const f = acc / L, x = ax + (bx - ax) * f + side * (by - ay) / L * 4.5, y = ay + (by - ay) * f - side * (bx - ax) / L * 4.5;
+        lamps.push({ x, y, z: live.zAt(x, y), vis: undefined });
+        side = -side;
       }
       acc -= L;
     }
-    if (line.length > 1) lamps.push(line);
   }
 }
+// Whether a lamp shows: decided once, when the height maps under it have loaded, then kept, so lamps never
+// blink while the map moves. Hidden when its foot is on a roof or a tree (it would glow out of a house) or a
+// building stands in front of its head.
+function lampVisible(l) {
+  if (l.vis !== undefined) return l.vis;
+  const [fx_, fy] = live.project(l.x, l.y, l.z), [hx, hy] = live.project(l.x, l.y, l.z + 4);
+  const foot = live.heightAt(fx_, fy), head = live.heightAt(hx, hy);
+  if (foot === null || head === null) return false;
+  l.vis = foot < 1.5 && !live.occluded(hx, hy, fy);
+  return l.vis;
+}
+// Lights are drawn on a coarse grid (one cell per few map pixels) with stepped intensity, so they read as
+// pixel art like the map under them rather than as smooth airbrush.
+const lowCv = document.createElement("canvas"), low = lowCv.getContext("2d");
 const sprites = {};
 function glowSprite(rgb) {
   const k = rgb.join();
@@ -112,30 +126,33 @@ function drawLights(G) {
   if (!lamps) buildLamps();
   const hour = new Date().getHours();
   const inView = (x, y, m) => x > -m && y > -m && x < W + m && y < H + m;
-  // street lighting: strips along the roads, broken where a building hides the road
+  // street lamps: a pool of light on the street and a bright head, in stepped bands on the coarse grid
   if (lamps && TN.view.s > 0.25) {
-    fg.lineCap = "round"; fg.lineJoin = "round";
-    const wide = Math.max(3, 9 * s), core = Math.max(1, 2.2 * s);
-    const runs = [];
-    for (const line of lamps) {
-      let run = [];
-      for (const [x, y, z] of line) {
-        const [sx, sy] = live.project(x, y, z + 0.5);
-        const [cx, cy] = live.toCanvas(sx, sy);
-        if (inView(cx, cy, wide) && !live.occluded(sx, sy, sy)) run.push([cx, cy]);
-        else { if (run.length > 1) runs.push(run); run = []; }
+    const px = Math.max(2, Math.round(s * 0.293 * 2));             // one grid cell = 2 map pixels
+    const w = Math.ceil(W / px), h = Math.ceil(H / px);
+    if (lowCv.width !== w || lowCv.height !== h) { lowCv.width = w; lowCv.height = h; } else low.clearRect(0, 0, w, h);
+    const R = 7 * s / px;                                           // pool radius (7 m) in grid cells
+    const bands = [[1, 0.16], [0.68, 0.16], [0.38, 0.2]];           // radius share, added alpha
+    let n = 0;
+    for (const l of lamps) {
+      const [sx, sy] = live.project(l.x, l.y, l.z);
+      const [cx, cy] = live.toCanvas(sx, sy);
+      if (!inView(cx, cy, 7 * s) || !lampVisible(l)) continue;
+      const gx = cx / px, gy = cy / px;
+      for (const [f, a] of bands) {
+        low.globalAlpha = a * k; low.fillStyle = "rgb(255,176,92)";
+        low.beginPath(); low.ellipse(Math.round(gx), Math.round(gy), R * f, R * f * 0.62, 0, 0, 7); low.fill();
       }
-      if (run.length > 1) runs.push(run);
+      const [hx, hy] = live.toCanvas(...live.project(l.x, l.y, l.z + 4));
+      low.globalAlpha = 0.9 * k; low.fillStyle = "rgb(255,236,190)";
+      low.fillRect(Math.round(hx / px) - 0.5, Math.round(hy / px) - 0.5, 1, 1);
+      n++;
     }
-    const stroke = (w, col, a) => {
-      fg.globalAlpha = a; fg.strokeStyle = col; fg.lineWidth = w;
-      fg.beginPath();
-      for (const r of runs) { fg.moveTo(...r[0]); for (let i = 1; i < r.length; i++) fg.lineTo(...r[i]); }
-      fg.stroke();
-    };
-    stroke(wide * 2.2, "rgb(255,170,90)", 0.10 * k);      // the pool of light on the street
-    stroke(wide, "rgb(255,190,120)", 0.18 * k);
-X
+    if (n) {
+      fg.globalAlpha = 1; fg.imageSmoothingEnabled = false;
+      fg.drawImage(lowCv, 0, 0, w * px, h * px);
+      fg.imageSmoothingEnabled = true;
+    }
   }
   // lit bars and restaurants in the evening
   if (TN.view.s > 0.5 && (hour >= 17 || hour < 2)) {

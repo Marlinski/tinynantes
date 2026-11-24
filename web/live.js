@@ -20,7 +20,7 @@ const hgt = new Map();
 let hits = [];                                // clickable things drawn this frame: {x, y, r, open}
 
 export const live = {
-  world, project, toCanvas, zAt, along, vehiclePose, occluded, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
+  world, project, toCanvas, zAt, along, vehiclePose, occluded, heightAt, box, label, shade, sprite, get SPRITE_CARS() { return SPRITE_CARS; },
   get ctx() { return ctx; }, room: null,
   get vehicles() { return vehicles; }, get menus() { return menus; }, get sections() { return sections; },
   lights: [],                                 // light sources drawn this frame (canvas px), read by fx.js at night
@@ -226,23 +226,37 @@ function inhabitants() {
 }
 
 // ---------------------------------------------------------------- occlusion (height tiles)
+// Height maps (one byte per pixel, 0.5 m steps): kept as single-channel arrays so a few hundred fit in memory.
+// The cache is least-recently-used; a FIFO of 64 thrashed when zoomed out (more tiles on screen than that),
+// and every reload made lights and sprites pop in and out of occlusion.
+const HGT_MAX = 320;
 function heightTile(i, j) {
   const k = `${TN.H}/${i}_${j}`;
   let t = hgt.get(k);
-  if (!t) {
-    t = { ready: false };
-    hgt.set(k, t);
-    const im = new Image();
-    im.onload = () => {
-      const c = document.createElement("canvas"); c.width = im.width; c.height = im.height;
-      const g = c.getContext("2d", { willReadFrequently: true }); g.drawImage(im, 0, 0);
-      t.data = g.getImageData(0, 0, im.width, im.height).data; t.w = im.width; t.ready = true;
-    };
-    im.onerror = () => { t.missing = true; };
-    im.src = `data/h${TN.H}/hgt/${i}_${j}.png${TN.v}`;
-    if (hgt.size > 64) hgt.delete(hgt.keys().next().value);
-  }
+  if (t) { hgt.delete(k); hgt.set(k, t); return t; }        // refresh its place in the LRU order
+  t = { ready: false };
+  hgt.set(k, t);
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement("canvas"); c.width = im.width; c.height = im.height;
+    const g = c.getContext("2d", { willReadFrequently: true }); g.drawImage(im, 0, 0);
+    const rgba = g.getImageData(0, 0, im.width, im.height).data, n = im.width * im.height, d = new Uint8Array(n);
+    for (let q = 0; q < n; q++) d[q] = rgba[4 * q];
+    t.data = d; t.w = im.width; t.ready = true;
+  };
+  im.onerror = () => { t.missing = true; };
+  im.src = `data/h${TN.H}/hgt/${i}_${j}.png${TN.v}`;
+  while (hgt.size > HGT_MAX) hgt.delete(hgt.keys().next().value);
   return t;
+}
+// Height (m) of what is drawn at screen point (sx, sy), or null while its height map is loading.
+function heightAt(sx, sy) {
+  const T = TN.man.tile_m, i = Math.floor(sx / T), j = Math.floor(sy / T);
+  const t = heightTile(i, j);
+  if (t.missing) return 0;
+  if (!t.ready) return null;
+  const px = Math.floor((sx - i * T) / T * t.w), py = Math.floor((sy - j * T) / T * t.w);
+  return t.data[py * t.w + px] * 0.5;
 }
 // Is screen point (sx, sy) covered by something standing in front of a sprite whose foot is at footY?
 function occluded(sx, sy, footY) {
@@ -250,7 +264,7 @@ function occluded(sx, sy, footY) {
   const t = heightTile(i, j);
   if (!t.ready) return false;
   const px = Math.floor((sx - i * T) / T * t.w), py = Math.floor((sy - j * T) / T * t.w);
-  const h = t.data[4 * (py * t.w + px)] * 0.5;
+  const h = t.data[py * t.w + px] * 0.5;
   return h > 0 && sy + h * COS45 > footY + 1.0;
 }
 
@@ -322,7 +336,7 @@ const SPRITE_CARS = ["car_white_hatch", "car_black_sedan", "car_grey_suv", "car_
   "car_silver_van", "car_green_hatch", "car_yellow_sedan"];
 // draw sprite `name` with its ground centre at world (x, y, z), heading ang; false if not available
 const spriteDir = new Map();            // key -> direction shown last (hysteresis: no flipping on a boundary)
-function sprite(name, x, y, z, ang, key) {
+function sprite(name, x, y, z, ang, key, opt) {
   const A = sprites.atlas, e = A?.[name];
   if (!e) return false;
   const im = sprites.sheets[e.sheet];
@@ -339,10 +353,14 @@ function sprite(name, x, y, z, ang, key) {
     if (spriteDir.size > 20000) spriteDir.clear();
   }
   const [cx, cy, w, h, ax, ay] = e.cells[k];
-  const sc = TN.view.s * TN.dpr / e.ppm;
+  const sc = TN.view.s * TN.dpr / e.ppm * (opt?.scale || 1);
   const [X, Y] = toCanvas(...project(x, y, z));
   ctx.imageSmoothingEnabled = sc < 1;
-  ctx.drawImage(im, cx, cy, w, h, X - ax * sc, Y - ay * sc, w * sc, h * sc);
+  if (opt?.rot) {                                                   // a bank: turn the sprite about its anchor
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(opt.rot);
+    ctx.drawImage(im, cx, cy, w, h, -ax * sc, -ay * sc, w * sc, h * sc);
+    ctx.restore();
+  } else ctx.drawImage(im, cx, cy, w, h, X - ax * sc, Y - ay * sc, w * sc, h * sc);
   ctx.imageSmoothingEnabled = true;
   return true;
 }
@@ -473,7 +491,9 @@ function trainItems(t, rect) {
       const p = along(best, dk);
       const [sx, sy] = project(p.x, p.y, p.z);
       if (!inRect(sx, sy, rect)) continue;
-      out.push({ sx, sy, h: 4, draw: () => { shadow(p.x, p.y, p.z, p.ang, 25, 2.9); coach(p.x, p.y, p.z, p.ang, 25, 2.9, 4.0, side, top); },
+      const spr = /TGV|OUIGO/.test(m.mode) ? (k === 0 ? "train_tgv_head" : "train_tgv") : "train_ter";
+      const ang = m.from === atNantes ? p.ang : p.ang + Math.PI;       // the head leads
+      out.push({ sx, sy, h: 4, draw: () => { if (!sprite(spr, p.x, p.y, p.z, ang, `t:${m.number}:${k}`)) { shadow(p.x, p.y, p.z, p.ang, 25, 2.9); coach(p.x, p.y, p.z, p.ang, 25, 2.9, 4.0, side, top); } },
                  hit: k === 0 ? { r: 18, open: () => live.open?.("train", m) } : null,
                  tip: k === 0 ? () => [`${m.mode} ${m.number} → ${m.headsign}`, m.delay ? `retard ${Math.round(m.delay / 60)} min` : "à l'heure"] : null });
     }
@@ -494,8 +514,11 @@ function planeItems(t, rect) {
       // shadow on the ground, then the aircraft at its altitude
       const [cx, cy] = toCanvas(gx, gy);
       ctx.fillStyle = "rgba(0,0,0,.18)"; ctx.beginPath(); ctx.ellipse(cx, cy, 14 * TN.dpr * TN.view.s / 2, 5 * TN.dpr * TN.view.s / 2, 0, 0, 7); ctx.fill();
-      box(x, y, z, ang, 36, 4, 4, "#f4f4f2", "#c9ccd2", "rgba(20,24,28,.4)");
-      box(x, y, z + 1.2, ang, 6, 34, 0.6, "#e8e9ec", "#b5b9c0");
+      const spr = /^(AT[47]|DH8|D[HC]8|F50|SF3|B190|C|P|PA|DA|TB|DR)/.test(pl.kind || "") ? "plane_prop" : "plane_jet";
+      if (!sprite(spr, x, y, z, ang, "pl:" + pl.hex)) {
+        box(x, y, z, ang, 36, 4, 4, "#f4f4f2", "#c9ccd2", "rgba(20,24,28,.4)");
+        box(x, y, z + 1.2, ang, 6, 34, 0.6, "#e8e9ec", "#b5b9c0");
+      }
     }, hit: { r: 20, at: [sx, sy], open: () => live.open?.("plane", pl) },
       tip: () => [`✈ ${pl.callsign || pl.hex} ${pl.kind || ""}`, pl.route ? `${pl.route.from?.city || "?"} → ${pl.route.to?.city || "?"}` : "", pl.ground ? "au sol" : `${Math.round(pl.alt)} m`] });
   }

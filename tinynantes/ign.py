@@ -125,7 +125,7 @@ WFS_LAYERS = {"bati": "BDTOPO_V3:batiment", "eau": "BDTOPO_V3:surface_hydrograph
 def _polygon_mask(bbox, typename):
     x0, y0, x1, y1 = bbox
     n = int(CHUNK / DEM_RES)
-    feats, start = [], 0
+    feats, start, tries = [], 0, 0
     while True:
         raw = _get(WFS, {
             "SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
@@ -133,7 +133,14 @@ def _polygon_mask(bbox, typename):
             "BBOX": f"{x0},{y0},{x1},{y1},EPSG:2154", "OUTPUTFORMAT": "application/json",
             "COUNT": 5000, "STARTINDEX": start,
         })
-        page = json.loads(raw)["features"]
+        try:
+            page = json.loads(raw)["features"]
+        except (ValueError, KeyError):         # the WFS sometimes answers an empty or HTML body under load
+            tries += 1
+            if tries > 5:
+                raise
+            time.sleep(10 * tries)
+            continue
         feats += page
         if len(page) < 5000:
             break
