@@ -187,7 +187,7 @@ function navAt(x, y) {
       c.d = g.getImageData(0, 0, im.width, im.height).data; c.n = im.width; c.ready = true;
     };
     c.loaded = new Promise((ok) => { im.onerror = () => { c.missing = true; ok(); }; im.addEventListener("load", () => setTimeout(ok)); });
-    im.src = `data/world/nav/${k}.png`;
+    im.src = `data/world/nav/${k}.png${TN.v}`;
   }
   if (!c.ready) return null;
   c.used = performance.now();

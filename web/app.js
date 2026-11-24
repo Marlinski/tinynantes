@@ -18,7 +18,10 @@ let showLabels = true;
 const cache = new Map();                // "L/i_j" -> { img, ready }
 let dirty = true;
 // shared with live.js (animated layer)
-window.TN = { view, get man() { return man; }, get dpr() { return dpr; }, get H() { return H; }, pointer: null,
+// map files are cached for a day: their URLs carry the published version, so a new publish is never mixed with
+// tiles left in the browser cache (version.json itself is never cached)
+let ver = "";
+window.TN = { get v() { return ver ? `?v=${ver}` : ""; }, view, get man() { return man; }, get dpr() { return dpr; }, get H() { return H; }, pointer: null,
   playing: false, click: null,
   // the game moves the camera: center on screen point (sx, sy), optionally at scale s
   follow(sx, sy, s) { view.x = sx; view.y = sy; if (s) view.s = s; anim = null; vel = null; dirty = true; } };
@@ -33,6 +36,7 @@ async function loadManifest(h) {
   mans[h] = m;
 }
 async function init() {
+  try { ver = (await (await fetch("version.json", { cache: "no-store" })).json()).version || ""; } catch { ver = ""; }
   try { heads = await (await fetch("data/headings.json")).json(); } catch { heads = [0]; }
   await Promise.all(heads.map(loadManifest));
   try { places = await (await fetch("data/places.json")).json(); } catch { places = []; }
@@ -53,7 +57,7 @@ function tile(L, i, j) {
     t.img.decoding = "async";
     t.img.onload = () => { t.ready = true; dirty = true; };
     t.img.onerror = () => { t.failed = true; };
-    t.img.src = `${dir()}${L}/${i}_${j}.webp`;
+    t.img.src = `${dir()}${L}/${i}_${j}.webp${TN.v}`;
     cache.set(k, t);
     if (cache.size > 400) evict();
   }
@@ -282,7 +286,7 @@ function screenToL93(sx, sy, z = 10) {
 }
 function setHeading(h) {
   H = h; man = mans[h];
-  mini.img.src = dir() + "overview.webp";
+  mini.img.src = dir() + "overview.webp" + TN.v;
   const [r, d] = man.axes;                               // where world north points on screen
   $("compass").style.transform = `rotate(${(Math.atan2(r[1], -d[1]) * 180 / Math.PI).toFixed(1)}deg)`;
 }
@@ -332,7 +336,7 @@ function initMini() {
     mini.cv.width = w * dpr; mini.cv.height = h * dpr; mini.cv.style.width = w + "px"; mini.cv.style.height = h + "px";
     mini.k = w / (man.box[2] - man.box[0]); dirty = true;
   };
-  mini.img.src = dir() + "overview.webp";
+  mini.img.src = dir() + "overview.webp" + TN.v;
   const jump = (e) => {
     const r = mini.cv.getBoundingClientRect();
     view.x = man.box[0] + (e.clientX - r.left) / mini.k; view.y = man.box[1] + (e.clientY - r.top) / mini.k;

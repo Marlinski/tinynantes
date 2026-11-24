@@ -65,7 +65,7 @@ function loadTerrain(meta) {
       ok({ z, w: im.width, h: im.height, x0: meta.x0 - meta.origin[0], y1: meta.y1 - meta.origin[1], res: meta.res });
     };
     im.onerror = () => ok(null);
-    im.src = "data/world/terrain.png";
+    im.src = "data/world/terrain.png" + TN.v;
   });
 }
 function zAt(x, y) {
@@ -239,7 +239,7 @@ function heightTile(i, j) {
       t.data = g.getImageData(0, 0, im.width, im.height).data; t.w = im.width; t.ready = true;
     };
     im.onerror = () => { t.missing = true; };
-    im.src = `data/h${TN.H}/hgt/${i}_${j}.png`;
+    im.src = `data/h${TN.H}/hgt/${i}_${j}.png${TN.v}`;
     if (hgt.size > 64) hgt.delete(hgt.keys().next().value);
   }
   return t;
@@ -314,7 +314,7 @@ const sprites = { atlas: null, sheets: [] };
 async function loadSprites() {
   try {
     const a = await getJSON(`data/sprites/h${TN.H}/atlas.json`);
-    sprites.sheets = a.sheets.map((f) => { const im = new Image(); im.src = `data/sprites/h${TN.H}/${f}`; return im; });
+    sprites.sheets = a.sheets.map((f) => { const im = new Image(); im.src = `data/sprites/h${TN.H}/${f}${TN.v}`; return im; });
     sprites.atlas = a;
   } catch { /* no sprites: box models */ }
 }
