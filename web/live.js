@@ -443,7 +443,7 @@ const BOAT = {              // sprite, length, beam, speed m/s, label
 };
 const RIVER_FLEET = {       // per km of river: which boats
   "La Loire": ["peniche", "sail", "motor", "peniche2", "motor"], "La Loire - Bras de la Madeleine": ["motor", "sail"],
-  "La Loire - Bras de Pirmil": ["motor", "peniche", "sail"], "L'Erdre": ["sail", "motor", "sail"],
+  "La Loire - Bras de Pirmil": ["motor", "peniche", "sail"], "L'Erdre": ["sail", "peniche", "motor", "sail"],
   "La Sèvre Nantaise": ["motor", "sail"],
 };
 const SHIP_INFO = { ship_maille_breze: ["Maillé-Brézé", "escorteur d'escadre (1957), musée naval"],
@@ -460,7 +460,10 @@ function boatPlan(w) {
   const yards = (w.yards || []).filter((y) => y.name && y.path.length > 1).map((y) => withCum({ name: y.name, p: y.path }));
   const moored = (w.moored || []).filter((m) => (m.ship === "maille_breze" && m.len > 100) || m.ship === "belem")
     .map((m) => ({ ...m, sprite: `ship_${m.ship}` }));
-  return { runs, yards, moored };
+  // the other boats OSM has moored (péniches on the Erdre: Bateau Lavoir, Morgenster...), scaled to their length
+  const barges = (w.moored || []).filter((m) => m.ship === "maille_breze" && m.len <= 100)
+    .map((m, k) => ({ ...m, kind: k % 2 ? "peniche2" : "peniche", scale: Math.max(0.45, Math.min(1, m.len / 38.5)) }));
+  return { runs, yards, moored, barges };
 }
 function boatItems(t, rect) {
   const out = [], W = world.water;
@@ -488,6 +491,13 @@ function boatItems(t, rect) {
       const p = along(y, d);
       push(`${y.name}:${k}`, kind, p, out_ ? p.ang + Math.PI : p.ang, () => [BOAT[kind][4], out_ ? `quitte le ${y.name}` : u < go ? `vers le ${y.name}` : `au ${y.name}`]);
     }
+  }
+  for (const m of W.barges) {
+    const [sx, sy] = project(m.p[0], m.p[1], m.z);
+    if (!inRect(sx, sy, rect)) continue;
+    const [name, L, B] = BOAT[m.kind];
+    out.push({ sx, sy, h: 3, draw: () => { if (!sprite(name, m.p[0], m.p[1], m.z, m.a, `m:${m.name}:${sx}`, { scale: m.scale })) { shadow(m.p[0], m.p[1], m.z, m.a, L * m.scale, B); box(m.p[0], m.p[1], m.z, m.a, L * m.scale, B, 1.2, "#f4f1ea", "#2c3440", OUTLINE); } },
+               hit: { r: 14, open: () => {} }, tip: () => [m.name || "Péniche", "péniche à quai"] });
   }
   for (const m of W.moored) {
     const [sx, sy] = project(m.p[0], m.p[1], m.z);
