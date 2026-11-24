@@ -231,7 +231,7 @@ const up = (e) => {
     dragging = false; cv.classList.remove("drag");
     // a tap (no drag): open what's under it (vehicle, place, event...)
     if (down0 && Math.hypot(e.clientX - down0.x, e.clientY - down0.y) < 6 && performance.now() - down0.t < 400
-        && TN.click?.(e.clientX, e.clientY)) { vel = null; return; }
+        && (TN.debugClick?.(e.clientX, e.clientY) || TN.click?.(e.clientX, e.clientY))) { vel = null; return; }
     if (performance.now() - last.t > 80) vel = null;
     if (!vel) writeHash();
   }

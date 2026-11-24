@@ -312,6 +312,9 @@ struct Agent {
     /// stopped to talk with a player until then, facing this way
     hold_until: f64,
     face: f32,
+    /// spawned from the debug panel (removed together), and a small offset from the path (crowds spread out)
+    dbg: bool,
+    jit: [f32; 2],
 }
 
 /// What clients get for one inhabitant: [id, kind, x, y, z, heading, speed, colour/variant]
@@ -348,6 +351,10 @@ pub struct March {
     pub motive: String,
     route: Vec<u32>,
     pub until: f64,
+    /// how many marchers at once
+    size: usize,
+    /// started from the debug panel: the automatic schedule leaves it alone until it ends
+    pinned: bool,
 }
 
 const FIRST_NAMES: &[&str] = &[
@@ -469,6 +476,10 @@ impl Sim {
 
     /// Start (or stop, with None) a demonstration along `waypoints` (local metres) until `until`.
     pub fn set_march(&mut self, m: Option<(String, Vec<[f32; 2]>, f64)>) {
+        let now = chrono::Utc::now().timestamp() as f64;
+        if self.march.as_ref().is_some_and(|x| x.pinned && now < x.until) {
+            return; // a march started from the debug panel
+        }
         let Some((motive, wps, until)) = m else {
             self.march = None;
             return;
@@ -476,6 +487,15 @@ impl Sim {
         if self.march.as_ref().is_some_and(|x| x.motive == motive) {
             return;
         }
+        let route = self.walk_route(&wps);
+        if route.len() >= 2 {
+            tracing::info!("march: {motive} ({} nodes)", route.len());
+            self.march = Some(March { motive, route, until, size: 160, pinned: false });
+        }
+    }
+
+    /// A walking route through `wps` (local metres), each snapped to the nearest footpath within 120 m.
+    fn walk_route(&self, wps: &[[f32; 2]]) -> Vec<u32> {
         let nodes: Vec<u32> = wps.iter().filter_map(|w| self.g.nearest(w[0], w[1], WALK, 120.0)).collect();
         let mut route: Vec<u32> = vec![];
         for w in nodes.windows(2) {
@@ -487,10 +507,95 @@ impl Sim {
                 }
             }
         }
-        if route.len() >= 2 {
-            tracing::info!("march: {motive} ({} nodes)", route.len());
-            self.march = Some(March { motive, route, until });
+        route
+    }
+
+    // ------------------------------------------------------------ debug panel
+    /// A demonstration along a drawn route, `size` marchers at once, for `secs`. Returns the route length (m).
+    pub fn debug_march(&mut self, motive: String, wps: &[[f32; 2]], secs: f64, size: usize) -> Option<f32> {
+        let route = self.walk_route(wps);
+        if route.len() < 2 {
+            return None;
         }
+        let len = route.windows(2).map(|w| {
+            let (a, b) = (self.g.xyz[w[0] as usize], self.g.xyz[w[1] as usize]);
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        }).sum();
+        self.agents.retain(|a| a.kind != Kind::Marcher);
+        let until = chrono::Utc::now().timestamp() as f64 + secs;
+        tracing::info!("debug march: {motive} ({len:.0} m, {size} marchers)");
+        self.march = Some(March { motive, route, until, size, pinned: true });
+        Some(len)
+    }
+
+    /// A crowd of `n` around (x, y) within `r` m for `secs`: strolling about, or gathered facing the centre.
+    pub fn debug_crowd(&mut self, x: f32, y: f32, n: usize, r: f32, secs: f64, gather: bool) -> usize {
+        let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        let mut made = 0;
+        for _ in 0..n * 3 {
+            if made >= n {
+                break;
+            }
+            let Some(a) = self.random_node_near(x, y, r, WALK) else { continue };
+            let path = if gather {
+                vec![a, a]
+            } else {
+                // a chain of short legs between points of the area, long enough to last `secs`
+                let v = 0.9;
+                let mut path = vec![a];
+                let mut walked = 0.0;
+                for _ in 0..40 {
+                    if walked > v * secs as f32 {
+                        break;
+                    }
+                    let here = *path.last().unwrap();
+                    let Some(b) = self.random_node_near(x, y, r, WALK) else { continue };
+                    if let Some(p) = self.g.route(here, b, WALK, 3000) {
+                        walked += p.windows(2).map(|w| {
+                            let (a, b) = (self.g.xyz[w[0] as usize], self.g.xyz[w[1] as usize]);
+                            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+                        }).sum::<f32>();
+                        path.extend_from_slice(&p[1..]);
+                    }
+                }
+                if path.len() < 2 {
+                    continue;
+                }
+                path
+            };
+            let seed: u32 = self.rng.gen();
+            let persona = people::persona(&self.quartiers, people::PersonaInput {
+                seed, hour: self.hour, home: None, place: None, trip: people::Trip::Walk, march: None });
+            // gathered: spread around their footpath node so the crowd fills the place rather than queueing on nodes
+            let spread = if gather { (r * 0.3).clamp(3.0, 12.0) } else { 3.0 };
+            let jit = [self.rng.gen_range(-spread..spread), self.rng.gen_range(-spread..spread)];
+            let v = self.rng.gen_range(0.6..1.2);
+            let here = self.g.xyz[a as usize];
+            let ag = self.spawn(Kind::Walker, path, v);
+            ag.seed = seed;
+            ag.persona = Some(Box::new(persona));
+            ag.dbg = true;
+            ag.jit = jit;
+            if gather {
+                // everyone faces the middle, a little turned this way or that
+                ag.hold_until = now + secs;
+                ag.face = (y - here[1] - jit[1]).atan2(x - here[0] - jit[0]) + (seed % 100) as f32 / 100.0 - 0.5;
+            }
+            made += 1;
+        }
+        tracing::info!("debug crowd: {made} at ({x:.0}, {y:.0}) r {r:.0}");
+        made
+    }
+
+    /// Remove everything the debug panel added (crowds, and a march it started). Returns how many left.
+    pub fn debug_stop(&mut self) -> usize {
+        let pinned = self.march.as_ref().is_some_and(|m| m.pinned);
+        if pinned {
+            self.march = None;
+        }
+        let before = self.agents.len();
+        self.agents.retain(|a| !a.dbg && !(pinned && a.kind == Kind::Marcher));
+        before - self.agents.len()
     }
 
     pub fn set_inputs(&mut self, i: &Inputs) {
@@ -537,6 +642,8 @@ impl Sim {
             ride: None,
             hold_until: 0.0,
             face: 0.0,
+            dbg: false,
+            jit: [0.0; 2],
         });
         self.agents.last_mut().unwrap()
     }
@@ -687,12 +794,12 @@ impl Sim {
             self.march = None;
             return;
         }
-        let route = m.route.clone();
+        let (route, size) = (m.route.clone(), m.size);
         let n = self.agents.iter().filter(|a| a.kind == Kind::Marcher).count();
-        if n >= 160 {
+        if n >= size {
             return;
         }
-        for _ in 0..3 {
+        for _ in 0..(size / 50).clamp(3, 10) {
             let seed: u32 = self.rng.gen();
             let role = match self.rng.gen_range(0..100) { 0..=11 => 1u8, 12..=40 => 2, _ => 0 };
             let label = ["manifestant", "batucada", "pancarte"][role as usize];
@@ -992,8 +1099,8 @@ impl Sim {
                     Kind::Marcher => (a.seed % 13) as f32 - 6.0, // the whole street
                     Kind::Bike => 2.6,
                 };
-                let x = pa[0] + (pb[0] - pa[0]) * f + dy * side;
-                let y = pa[1] + (pb[1] - pa[1]) * f - dx * side;
+                let x = pa[0] + (pb[0] - pa[0]) * f + dy * side + a.jit[0];
+                let y = pa[1] + (pb[1] - pa[1]) * f - dx * side + a.jit[1];
                 let z = pa[2] + (pb[2] - pa[2]) * f;
                 let variant = match a.kind {
                     Kind::Emergency => a.service + 4 * a.siren as u8,

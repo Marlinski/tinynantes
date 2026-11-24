@@ -179,6 +179,28 @@ body.playing .mini, body.playing .search { display: none; }
 .dbg .x { position: absolute; right: 6px; top: 4px; background: none; border: 0; color: inherit; font-size: 16px; cursor: pointer; }
 .dbg input[type=range] { width: 150px; vertical-align: middle; }
 .dbg small { color: #9aa3ad; }
+.dbg { max-height: calc(100vh - 130px); overflow-y: auto; }
+.dbg hr { border: 0; border-top: 1px solid #ffffff22; margin: 4px 0; width: 100%; }
+.dbg fieldset { border: 1px solid #ffffff22; border-radius: 8px; padding: 4px 8px 8px; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.dbg legend { padding: 0 4px; color: #f5b83d; font-weight: 600; }
+.dbg .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.dbg input[type=number] { width: 52px; }
+.dbg input:not([type=checkbox]):not([type=range]), .dbg select { background: #0d1014; color: inherit; border: 1px solid #ffffff2a;
+  border-radius: 5px; padding: 2px 5px; font: inherit; }
+.dbg #dbgMotive, .dbg #dbgKey { width: 100%; box-sizing: border-box; }
+.dbg button:not(.x) { background: #2a3038; color: inherit; border: 1px solid #ffffff22; border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
+.dbg button.on { background: #f5b83d; color: #1a1d21; border-color: #f5b83d; }
+.dbg button.go { background: #2f6f4f; }
+.dbg button.stop { background: #7a2e2e; }
+.dbg .status { min-height: 1.5em; }
+.dbg label.col { display: flex; flex-direction: column; gap: 2px; }
+.dbg .status.bad { color: #ff8a80; }
+#dbgOverlay { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 40; }
+#dbgOverlay polyline { fill: none; stroke: #ff5a4e; stroke-width: 4; stroke-dasharray: 10 6; stroke-linejoin: round; }
+#dbgOverlay circle { fill: #fff; stroke: #ff5a4e; stroke-width: 2; }
+#dbgOverlay circle.start { fill: #ff5a4e; stroke: #fff; }
+#dbgOverlay polygon.area { fill: #f5b83d33; stroke: #f5b83d; stroke-width: 2; }
+body.dbg-armed #map, body.dbg-armed canvas { cursor: crosshair; }
 
 /* conversations with the inhabitants */
 .talk { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }

@@ -316,6 +316,7 @@ function debugPanel() {
     <label>météo <select id="dbgWx">${WX.map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></label>
     <small id="dbgInfo"></small>`;
   document.body.append(el);
+  TN.onDebugPanel?.(el);
   const real = el.querySelector("#dbgReal"), hr = el.querySelector("#dbgHour"), hl = el.querySelector("#dbgH");
   const fmt = (h) => `${String(Math.floor(h)).padStart(2, "0")}:${String(Math.round(h % 1 * 60)).padStart(2, "0")}`;
   const sync = () => { hr.disabled = real.checked; TN.debug.hour = real.checked ? null : +hr.value; hl.textContent = real.checked ? "—" : fmt(+hr.value); };

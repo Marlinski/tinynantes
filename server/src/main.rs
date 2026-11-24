@@ -250,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/talk/end", post(talk_end))
         .route("/api/news", get(news_h))
         .route("/api/bikes", get(bikes_h))
+        .route("/api/debug", post(debug_h))
         .with_state(TalkState { app: app.clone(), world: world.clone(), players: players.clone() });
     let living = Router::new()
         .route("/api/world", get(world_ws))
@@ -927,6 +928,62 @@ fn upcoming(v: &serde_json::Value) -> Vec<String> {
         Some(format!("{name}{}{}", if place.is_empty() { String::new() } else { format!(", {place}") },
                      if when.is_empty() { String::new() } else { format!(" ({when})") }))
     }).collect()
+}
+
+#[derive(serde::Deserialize)]
+struct DebugIn {
+    key: Option<String>,
+    action: String,
+    x: Option<f32>,
+    y: Option<f32>,
+    n: Option<usize>,
+    r: Option<f32>,
+    minutes: Option<f64>,
+    gather: Option<bool>,
+    motive: Option<String>,
+    route: Option<Vec<[f32; 2]>>,
+    size: Option<usize>,
+}
+
+/// POST /api/debug {key, action: "crowd" | "march" | "stop", ...}: the debug panel's shared actions (seen by
+/// everyone, so guarded): a key equal to TN_ADMIN_KEY, or no key at all when the server runs with TN_DEBUG_OPEN=1
+/// (local development only).
+async fn debug_h(State(t): State<TalkState>, axum::Json(q): axum::Json<DebugIn>) -> Response {
+    let bad = |c: StatusCode, m: &str| (c, axum::Json(serde_json::json!({ "error": m }))).into_response();
+    let allowed = match std::env::var("TN_ADMIN_KEY").ok().filter(|k| k.len() >= 12) {
+        Some(k) => q.key.as_deref().is_some_and(|g| {
+            g.len() == k.len() && g.bytes().zip(k.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+        }),
+        None => std::env::var("TN_DEBUG_OPEN").is_ok_and(|v| v == "1"),
+    };
+    if !allowed {
+        return bad(StatusCode::FORBIDDEN, "clé admin requise");
+    }
+    let secs = q.minutes.unwrap_or(20.0).clamp(1.0, 240.0) * 60.0;
+    let mut s = t.world.sim.write().await;
+    let out = match q.action.as_str() {
+        "crowd" => {
+            let (Some(x), Some(y)) = (q.x, q.y) else { return bad(StatusCode::BAD_REQUEST, "x, y") };
+            let n = s.debug_crowd(x, y, q.n.unwrap_or(80).min(400), q.r.unwrap_or(40.0).clamp(5.0, 300.0), secs,
+                q.gather.unwrap_or(false));
+            serde_json::json!({ "spawned": n })
+        }
+        "march" => {
+            let route = q.route.unwrap_or_default();
+            if route.len() < 2 || route.len() > 60 {
+                return bad(StatusCode::BAD_REQUEST, "un parcours de 2 à 60 points");
+            }
+            let motive: String = q.motive.unwrap_or_default().trim().chars().take(80).collect();
+            let motive = if motive.is_empty() { "Manifestation".to_string() } else { motive };
+            match s.debug_march(motive, &route, secs, q.size.unwrap_or(200).clamp(10, 600)) {
+                Some(len) => serde_json::json!({ "length": len.round() }),
+                None => return bad(StatusCode::UNPROCESSABLE_ENTITY, "pas de chemin piéton le long de ce parcours"),
+            }
+        }
+        "stop" => serde_json::json!({ "removed": s.debug_stop() }),
+        _ => return bad(StatusCode::BAD_REQUEST, "action inconnue"),
+    };
+    axum::Json(out).into_response()
 }
 
 async fn agent(State(w): State<Arc<sim::World>>, UrlPath(id): UrlPath<u32>) -> Response {
