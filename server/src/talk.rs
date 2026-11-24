@@ -166,6 +166,25 @@ impl Talker {
         self.provider.is_some()
     }
 
+    /// For /metrics: replies spent today and the cap; over the last `secs`: distinct players who talked and lines
+    /// logged by role.
+    pub fn stats(&self, secs: i64) -> (u32, u32, i64, Vec<(String, i64)>) {
+        let since = chrono::Utc::now().timestamp() - secs;
+        let midnight = chrono::Utc::now().date_naive().and_hms_opt(0, 0, 0).map(|d| d.and_utc().timestamp()).unwrap_or(since);
+        let db = self.db.lock().unwrap();
+        // from the log rather than the in-memory cap counter, so a restart doesn't reset it
+        let today: u32 = db.query_row("SELECT COUNT(*) FROM talk_log WHERE ts >= ?1 AND role = 'sim' AND in_tok IS NOT NULL",
+            params![midnight], |r| r.get(0)).unwrap_or(0);
+        let players = db.query_row("SELECT COUNT(DISTINCT player) FROM talk_log WHERE ts >= ?1", params![since], |r| r.get(0)).unwrap_or(0);
+        let mut roles = vec![];
+        if let Ok(mut st) = db.prepare("SELECT role, COUNT(*) FROM talk_log WHERE ts >= ?1 GROUP BY role") {
+            if let Ok(rows) = st.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+                roles = rows.flatten().collect();
+            }
+        }
+        (today, self.daily_cap, players, roles)
+    }
+
     fn log(&self, player: &str, agent: u32, persona: &str, role: &str, text: &str, usage: Option<(i64, i64)>) {
         let db = self.db.lock().unwrap();
         let _ = db.execute(
@@ -201,6 +220,7 @@ impl Talker {
         if cold {
             let out = "(Fait mine de ne pas vous voir et passe son chemin.)".to_string();
             self.log(player, agent, &name, "guard", &text, None);
+            crate::metrics::inc("tn_talk_turns_total", &[("outcome", "cold_shoulder")], 1.0);
             return Ok(Reply { text: out, ended: true, snubbed: true, name });
         }
         let (mut msgs, turns) = {
@@ -209,6 +229,9 @@ impl Talker {
             let e = c.entry((player.to_string(), agent)).or_insert(Conv { msgs: vec![], turns: 0, last: Instant::now() });
             (e.msgs.clone(), e.turns)
         };
+        if turns == 0 && msgs.is_empty() {
+            crate::metrics::inc("tn_talk_conversations_total", &[], 1.0);
+        }
         let said = if text.trim().is_empty() { "(Le passant s'approche et t'aborde.)".to_string() } else { text.clone() };
         msgs.push(json!({"role": "user", "content": said}));
         self.log(player, agent, &name, "player", &said, None);
@@ -232,9 +255,13 @@ impl Talker {
             self.snubbed.lock().unwrap().insert(player.to_string(), Instant::now());
             self.convs.lock().unwrap().remove(&(player.to_string(), agent));
             self.log(player, agent, &name, "guard", if derailing { "regex" } else { "classifier" }, None);
+            crate::metrics::inc("tn_talk_turns_total", &[("outcome", if derailing { "walk_off_regex" } else { "walk_off_classifier" })], 1.0);
+            crate::metrics::inc("tn_talk_ended_total", &[], 1.0);
             self.log(player, agent, &name, "sim", &out, None);
             return Ok(Reply { text: out, ended: true, snubbed: true, name });
         }
+        let by_llm = self.provider.is_some() && budget && answer.is_ok();
+        crate::metrics::inc("tn_talk_turns_total", &[("outcome", if by_llm { "llm" } else { "template" })], 1.0);
         let (mut out, usage) = answer.unwrap_or_else(|e| {
             tracing::warn!("talk: {e:#}");
             (canned(&scene, turns), None)
@@ -250,6 +277,9 @@ impl Talker {
             ended = true;
         }
         self.log(player, agent, &name, "sim", &out, usage);
+        if ended {
+            crate::metrics::inc("tn_talk_ended_total", &[], 1.0);
+        }
         msgs.push(json!({"role": "assistant", "content": out}));
         {
             let mut c = self.convs.lock().unwrap();
@@ -303,6 +333,22 @@ impl Talker {
     }
 
     async fn openrouter(&self, key: &str, body: &Value, timeout: u64) -> Result<(String, Option<(i64, i64)>)> {
+        let kind = if body["max_tokens"].as_i64() == Some(4) { "guard" } else { "reply" };
+        let r = self.openrouter_call(key, body, timeout).await;
+        match &r {
+            Ok((_, model, usage)) => {
+                crate::metrics::inc("tn_llm_requests_total", &[("kind", kind), ("model", model)], 1.0);
+                if let Some((i, o)) = usage {
+                    crate::metrics::inc("tn_llm_tokens_total", &[("kind", kind), ("dir", "in")], *i as f64);
+                    crate::metrics::inc("tn_llm_tokens_total", &[("kind", kind), ("dir", "out")], *o as f64);
+                }
+            }
+            Err(_) => crate::metrics::inc("tn_llm_errors_total", &[("kind", kind)], 1.0),
+        }
+        r.map(|(t, _, u)| (t, u))
+    }
+
+    async fn openrouter_call(&self, key: &str, body: &Value, timeout: u64) -> Result<(String, String, Option<(i64, i64)>)> {
         let r = self.http.post(OPENROUTER)
             .bearer_auth(key)
             .header("HTTP-Referer", "https://tinynantes.fr")
@@ -317,8 +363,9 @@ impl Talker {
         }
         let usage = Some((v["usage"]["prompt_tokens"].as_i64().unwrap_or(0), v["usage"]["completion_tokens"].as_i64().unwrap_or(0)));
         let text = v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
-        tracing::debug!("talk: answered by {}", v["model"].as_str().unwrap_or("?"));
-        Ok((text, usage))
+        let model = v["model"].as_str().unwrap_or("?").to_string();
+        tracing::debug!("talk: answered by {model}");
+        Ok((text, model, usage))
     }
 
     async fn ask(&self, pr: &Provider, msgs: &[Value], s: &Scene, left: u32) -> Result<(String, Option<(i64, i64)>)> {
@@ -364,6 +411,10 @@ impl Talker {
         }
         let usage = Some((v["usage"]["input_tokens"].as_i64().unwrap_or(0) + v["usage"]["cache_read_input_tokens"].as_i64().unwrap_or(0),
                           v["usage"]["output_tokens"].as_i64().unwrap_or(0)));
+        let model = v["model"].as_str().unwrap_or("claude");
+        crate::metrics::inc("tn_llm_requests_total", &[("kind", "reply"), ("model", model)], 1.0);
+        crate::metrics::inc("tn_llm_tokens_total", &[("kind", "reply"), ("dir", "in")], usage.unwrap().0 as f64);
+        crate::metrics::inc("tn_llm_tokens_total", &[("kind", "reply"), ("dir", "out")], usage.unwrap().1 as f64);
         if v["stop_reason"] == "refusal" {
             return Ok(("Hmm, je préfère ne pas parler de ça. Bonne journée ! [PART]".into(), usage));
         }

@@ -50,6 +50,16 @@ pub struct Player {
 }
 
 impl Players {
+    /// For /metrics: players online now; accounts ever created; distinct names with a session opened in `secs`.
+    pub async fn stats(&self, secs: i64) -> (usize, i64, i64) {
+        let online = self.online.read().await.len();
+        let db = self.db.lock().unwrap();
+        let users = db.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
+        let active = db.query_row("SELECT COUNT(DISTINCT name) FROM sessions WHERE created >= ?1",
+            params![now() - secs], |r| r.get(0)).unwrap_or(0);
+        (online, users, active)
+    }
+
     /// The name behind a session token.
     pub fn name_of(&self, token: &str) -> Option<String> {
         self.db.lock().unwrap()
@@ -157,6 +167,7 @@ pub async fn login(
         let v = f.entry(k.clone()).or_default();
         v.retain(|t| t.elapsed() < Duration::from_secs(600));
         if v.len() >= 6 {
+            crate::metrics::inc("tn_logins_total", &[("outcome", "throttled")], 1.0);
             return err(StatusCode::TOO_MANY_REQUESTS, "Trop d'essais, réessayez dans quelques minutes");
         }
     }
@@ -173,6 +184,7 @@ pub async fn login(
             if !ok {
                 p.failures.lock().unwrap().entry(k.clone()).or_default().push(Instant::now());
                 p.log("login_failed", Some(&name), Some(&ip), "");
+                crate::metrics::inc("tn_logins_total", &[("outcome", "bad_password")], 1.0);
                 return err(StatusCode::UNAUTHORIZED, "Mot de passe incorrect");
             }
             (shown, true)
@@ -194,6 +206,7 @@ pub async fn login(
                 return err(StatusCode::CONFLICT, "Ce nom vient d'être réservé");
             }
             p.log("register", Some(&name), Some(&ip), "");
+            crate::metrics::inc("tn_logins_total", &[("outcome", "new_account")], 1.0);
             (name.clone(), true)
         }
         (None, None) => {
@@ -207,6 +220,7 @@ pub async fn login(
     let mut b = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut b);
     let token: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    crate::metrics::inc("tn_logins_total", &[("outcome", "ok")], 1.0);
     let _ = p.db.lock().unwrap().execute(
         "INSERT INTO sessions (token, name, reserved, created, ip) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![token, shown, reserved as i32, now(), ip],
@@ -237,6 +251,7 @@ pub async fn ws(
         .unwrap_or(None);
     let Some(name) = name else { return err(StatusCode::UNAUTHORIZED, "session inconnue") };
     let ip = client_ip(&headers, addr);
+    crate::metrics::inc("tn_ws_sessions_total", &[], 1.0);
     up.max_message_size(4096).on_upgrade(move |sock| session(p, sock, name, ip))
 }
 
@@ -285,6 +300,7 @@ async fn session(p: Arc<Players>, sock: WebSocket, name: String, ip: String) {
                             params![ts, name, x, y, text],
                         );
                         tracing::info!(name, text, "chat");
+                        crate::metrics::inc("tn_chat_messages_total", &[], 1.0);
                         let out = serde_json::json!({"t": "chat", "id": id, "name": name, "text": text, "x": x, "y": y, "ts": ts});
                         let _ = p.tx.send(out.to_string().into());
                     }

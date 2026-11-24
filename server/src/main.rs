@@ -9,7 +9,8 @@
 //!   places (crawled menus) in SQLite
 //!
 //! Env: TN_WEB (default ../web), TN_DATA (cache + SQLite, default ./data), TN_PLACES (crawled places, default
-//! TN_DATA/places), TN_PORT (default 8080), RUST_LOG.
+//! TN_DATA/places), TN_PORT (default 8080), TN_METRICS_PORT (Prometheus /metrics, default 9100, 0 = off; keep it
+//! inside the cluster), RUST_LOG.
 
 mod bikes;
 mod feeds;
@@ -18,6 +19,7 @@ mod l93;
 mod menus;
 mod news;
 mod people;
+mod metrics;
 mod planes;
 mod pullrouge;
 mod players;
@@ -114,6 +116,7 @@ fn now() -> i64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    STARTED.get_or_init(now);
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -256,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
     let living = Router::new()
         .route("/api/world", get(world_ws))
         .route("/api/agent/:id", get(agent))
-        .with_state(world);
+        .with_state(world.clone());
     // The painted map (tile pyramids, height maps, headings.json, tiles.json) can live apart from the code, on its
     // own volume (TN_TILES), so a code deploy doesn't carry half a gigabyte of drawings. Default: web/data.
     let tiles = std::env::var("TN_TILES").map(PathBuf::from).ok()
@@ -269,6 +272,19 @@ async fn main() -> anyhow::Result<()> {
     for h in 0..8 {
         map = map.nest_service(&format!("/data/h{h}"), ServeDir::new(tiles.join(format!("h{h}"))));
     }
+    // Prometheus metrics on their own port (not behind the public site)
+    let mport: u16 = std::env::var("TN_METRICS_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(9100);
+    if mport != 0 {
+        let ms = TalkState { app: app.clone(), world: world.clone(), players: players.clone() };
+        let mr = Router::new().route("/metrics", get(metrics_h)).with_state(ms);
+        match tokio::net::TcpListener::bind(("0.0.0.0", mport)).await {
+            Ok(l) => {
+                tracing::info!("metrics on :{mport}/metrics");
+                tokio::spawn(async move { let _ = axum::serve(l, mr).await; });
+            }
+            Err(e) => tracing::warn!("metrics port {mport}: {e}"),
+        }
+    }
     let router = api
         .merge(social)
         .merge(living)
@@ -276,11 +292,101 @@ async fn main() -> anyhow::Result<()> {
         .merge(map)
         .fallback_service(ServeDir::new(&web).append_index_html_on_directories(true))
         .layer(middleware::from_fn(cache_headers))
+        .layer(middleware::from_fn(count_requests))
         .layer(CompressionLayer::new());
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("serving {web:?} on :{port}");
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+/// Requests and time spent, by route group and status class (for /metrics).
+async fn count_requests(req: Request, next: Next) -> Response {
+    let route = metrics::route(req.uri().path());
+    let t = std::time::Instant::now();
+    let res = next.run(req).await;
+    let class = match res.status().as_u16() { 100..=199 => "1xx", 200..=299 => "2xx", 300..=399 => "3xx", 400..=499 => "4xx", _ => "5xx" };
+    metrics::inc("tn_http_requests_total", &[("route", route), ("status", class)], 1.0);
+    metrics::inc("tn_http_request_seconds_total", &[("route", route)], t.elapsed().as_secs_f64());
+    res
+}
+
+static STARTED: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+
+/// GET /metrics (metrics port): Prometheus text format.
+async fn metrics_h(State(t): State<TalkState>) -> Response {
+    let n = now();
+    let started = *STARTED.get_or_init(|| n);
+    let app = &t.app;
+    let mut m = metrics::Page::default();
+    let version = std::fs::read_to_string(app.web.join("version.json")).ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["version"].as_str().map(String::from)).unwrap_or_else(|| "dev".into());
+    m.gauge("tn_build_info", &[("version", &version)], 1.0);
+    m.gauge("tn_uptime_seconds", &[], (n - started) as f64);
+    if let Some(r) = metrics::rss() {
+        m.gauge("tn_process_resident_bytes", &[], r);
+    }
+    let (online, users, active_day) = t.players.stats(86400).await;
+    let (_, _, active_week) = t.players.stats(7 * 86400).await;
+    m.gauge("tn_players_online", &[], online as f64);
+    m.gauge("tn_users_registered", &[], users as f64);
+    m.gauge("tn_users_active", &[("window", "24h")], active_day as f64);
+    m.gauge("tn_users_active", &[("window", "7d")], active_week as f64);
+    let (today, cap, talkers, roles) = app.talker.stats(86400);
+    m.gauge("tn_llm_replies_today", &[], today as f64);
+    m.gauge("tn_llm_daily_cap", &[], cap as f64);
+    m.gauge("tn_talk_players", &[("window", "24h")], talkers as f64);
+    for (role, c) in roles {
+        m.gauge("tn_talk_messages", &[("window", "24h"), ("role", &role)], c as f64);
+    }
+    {
+        let s = t.world.sim.read().await;
+        for (k, c) in ["car", "walker", "bike", "emergency", "marcher"].iter().zip(s.census()) {
+            m.gauge("tn_sim_agents", &[("kind", k)], c as f64);
+        }
+        m.gauge("tn_sim_march_active", &[], s.marching().is_some() as u8 as f64);
+    }
+    // live feeds: age of the last good refresh, and whether the last attempt worked
+    let mut feed = |name: &str, ok_at: Option<i64>, up: bool| {
+        if let Some(a) = ok_at {
+            m.gauge("tn_feed_age_seconds", &[("feed", name)], (n - a) as f64);
+        }
+        m.gauge("tn_feed_up", &[("feed", name)], up as u8 as f64);
+    };
+    { let c = app.timetable.read().await; feed("timetable", c.ok_at, c.error.is_none() && c.value.is_some()); }
+    { let c = app.rt.read().await; feed("realtime", c.ok_at, c.error.is_none() && c.ok_at.is_some()); }
+    { let c = app.traffic.read().await; feed("traffic", c.ok_at, c.error.is_none() && c.ok_at.is_some()); }
+    { let c = app.events.read().await; feed("events", c.ok_at, c.error.is_none() && c.ok_at.is_some()); }
+    { let c = app.weather.read().await; feed("weather", c.ok_at, c.error.is_none() && c.ok_at.is_some()); }
+    { let c = app.sncf.read().await; feed("sncf", c.ok_at, c.error.is_none() && c.value.is_some()); }
+    let (planes, planes_at, planes_up) = { let s = app.sky.read().await; (s.planes.len(), s.at, s.error.is_none()) };
+    feed("planes", (planes_at > 0).then_some(planes_at), planes_up);
+    let (bk_upd, bk_rep, renting, closed, bikes) = {
+        let b = app.bikes.read().await;
+        let renting = b.stations.iter().filter(|s| s.renting).count();
+        (b.updated, b.reported, renting, b.stations.len() - renting, b.stations.iter().filter(|s| s.renting).map(|s| s.bikes as f64).sum::<f64>())
+    };
+    feed("bikes", (bk_upd > 0).then_some(bk_upd), bk_upd > 0 && n - bk_upd < 300);
+    feed("bikes_operator", (bk_rep > 0).then_some(bk_rep), bk_rep > 0 && bk_upd - bk_rep < 1800);
+    let (news, news_at) = { let x = app.news.read().await; (x.items.len(), x.updated) };
+    feed("news", (news_at > 0).then_some(news_at), news > 0);
+    m.gauge("tn_planes", &[], planes as f64);
+    m.gauge("tn_bike_stations", &[("state", "renting")], renting as f64);
+    m.gauge("tn_bike_stations", &[("state", "out_of_service")], closed as f64);
+    m.gauge("tn_bikes_available", &[], bikes);
+    m.gauge("tn_news_items", &[], news as f64);
+    if let Some(b) = app.events.read().await.value.clone() {
+        let v: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap_or_default();
+        let mut by: HashMap<String, usize> = HashMap::new();
+        for e in &v {
+            *by.entry(e["source"].as_str().unwrap_or("?").to_string()).or_default() += 1;
+        }
+        for (s, c) in by {
+            m.gauge("tn_events_today", &[("source", &s)], c as f64);
+        }
+    }
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], m.render()).into_response()
 }
 
 async fn cache_headers(req: Request, next: Next) -> Response {
@@ -973,8 +1079,10 @@ async fn debug_h(State(t): State<TalkState>, axum::Json(q): axum::Json<DebugIn>)
         None => std::env::var("TN_DEBUG_OPEN").is_ok_and(|v| v == "1"),
     };
     if !allowed {
+        metrics::inc("tn_debug_denied_total", &[], 1.0);
         return bad(StatusCode::FORBIDDEN, "clé admin requise");
     }
+    metrics::inc("tn_debug_actions_total", &[("action", match q.action.as_str() { "crowd" => "crowd", "march" => "march", "stop" => "stop", _ => "other" })], 1.0);
     let secs = q.minutes.unwrap_or(20.0).clamp(1.0, 240.0) * 60.0;
     let mut s = t.world.sim.write().await;
     let out = match q.action.as_str() {

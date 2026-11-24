@@ -470,6 +470,15 @@ impl Sim {
     pub fn set_transit(&mut self, t: Arc<TransitIndex>) {
         self.transit = Some(t);
     }
+    /// For /metrics: inhabitants on the map by kind (car, walker, bike, emergency, marcher).
+    pub fn census(&self) -> [usize; 5] {
+        let mut n = [0; 5];
+        for a in &self.agents {
+            n[a.kind as usize] += 1;
+        }
+        n
+    }
+
     pub fn marching(&self) -> Option<&str> {
         self.march.as_ref().map(|m| m.motive.as_str())
     }
