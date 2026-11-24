@@ -30,13 +30,14 @@ window.TNGame = { me, others, navAt, walkable };       // for debugging from the
 const side = $("side"), sideBody = $("sideBody");
 $("sideClose").onclick = () => closeSide();
 function openSide(html) { sideBody.innerHTML = html; side.hidden = false; side.scrollTop = 0; }
-function closeSide() { side.hidden = true; sideBody.innerHTML = ""; }
+function closeSide() { side.hidden = true; sideBody.innerHTML = ""; sideBody.dataset.poi = ""; }
 const hm = (t) => new Date(t * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 const delayTxt = (d) => (d == null ? "" : Math.abs(d) < 60 ? `<span class="ok">à l'heure</span>` :
   `<span class="late">${d > 0 ? "+" : "−"}${Math.round(Math.abs(d) / 60)} min</span>`);
 async function getJSON(u) { const r = await fetch(u); if (!r.ok) throw new Error(r.status); return r.json(); }
 
 live.open = async (kind, d) => {
+  sideBody.dataset.poi = "";
   if (kind === "vehicle") {
     const { v, r } = d, t = live.now();
     const name = { 0: "Tram", 3: "Bus", 4: "Navibus" }[r.type] || "Ligne";
@@ -109,27 +110,55 @@ live.open = async (kind, d) => {
       <p class="src">Agenda de Nantes Métropole</p>`);
   } else if (kind === "poi") {
     const p = d, t = p.t;
+    sideBody.dataset.poi = p.id;
     const head = `<p class="kicker">${esc((p.k || "").split("=")[1]?.replace(/_/g, " "))}${t.cuisine ? " · " + esc(t.cuisine.replace(/;/g, ", ")) : ""}</p>
       <h2>${esc(t.name)}</h2>
       ${t.opening_hours ? `<p><small>Horaires (OSM) :</small> ${esc(t.opening_hours)}</p>` : ""}
       ${t.phone || t["contact:phone"] ? `<p><a href="tel:${esc(t.phone || t["contact:phone"])}">${esc(t.phone || t["contact:phone"])}</a></p>` : ""}`;
     openSide(head + `<p>…</p>`);
+    // the server answers right away with its copy and, when that copy is over a day old, reads the site again
+    // in the background ("refreshing"): ask once more a few seconds later
+    const render = (info) => {
+      let body = "";
+      if (info?.image) body += `<img class="hero" src="${esc(info.image)}" alt="" onerror="this.remove()">`;
+      if (info?.description) body += `<p>${esc(info.description)}</p>`;
+      const price = (v) => (v != null ? `<b>${(+v).toFixed(2).replace(".", ",")} €</b>` : "");
+      if (info?.sections?.length) {
+        body += `<h3>La carte</h3>` + info.sections.map((s) => `${s.title ? `<h4>${esc(s.title)}</h4>` : ""}<ul class="menu">${s.items.map((it) =>
+          `<li><span>${esc(it.name)}${it.desc ? `<small>${esc(it.desc)}</small>` : ""}</span>${price(it.price)}</li>`).join("")}</ul>`).join("");
+      }
+      if (info?.images?.length && !info?.sections?.length) {
+        body += `<h3>La carte</h3><div class="menuimgs">${info.images.map((u) =>
+          `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Carte" loading="lazy" onerror="this.parentNode.remove()"></a>`).join("")}</div>`;
+      }
+      if (info?.pdfs?.length && info.source !== "pdf") {
+        body += `${info?.sections?.length || info?.images?.length ? "" : "<h3>La carte</h3>"}<ul>${info.pdfs.map((u, k) =>
+          `<li><a href="${esc(u)}" target="_blank" rel="noopener">Carte en PDF${info.pdfs.length > 1 ? " " + (k + 1) : ""}</a></li>`).join("")}</ul>`;
+      }
+      if (info?.sections?.length || info?.images?.length) {
+        const when = info.fetched ? new Date(info.fetched * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "long" }) : "";
+        body += `<p class="src">Lu sur <a href="${esc(info.menu_url || info.website)}" target="_blank" rel="noopener">leur site</a>${when ? " le " + when : ""} : peut être incomplet ou daté.</p>`;
+      }
+      if (info?.links?.length) {
+        const verb = (n) => (["Uber Eats", "Deliveroo", "Just Eat"].includes(n) ? "Commander sur" : "Réserver sur");
+        body += `<p class="links">${info.links.map((l) => `<a class="pill" href="${esc(l.url)}" target="_blank" rel="noopener">${verb(l.name)} ${esc(l.name)}</a>`).join(" ")}</p>`;
+      }
+      const site = t.website || t["contact:website"];
+      if (site) body += `<p><a href="${esc(site)}" target="_blank" rel="noopener">Site web</a></p>`;
+      if (info?.refreshing) body += `<p class="src">Lecture de leur site en cours…</p>`;
+      if (!body) body = `<p>Pas encore d'infos sur ce lieu.</p>`;
+      return body;
+    };
     let info = null;
-    try { info = await getJSON(`api/poi/${encodeURIComponent(p.id)}`); } catch { /* not crawled */ }
-    let body = "";
-    if (info?.image) body += `<img class="hero" src="${esc(info.image)}" alt="" onerror="this.remove()">`;
-    if (info?.description) body += `<p>${esc(info.description)}</p>`;
-    if (info?.sections?.length) {
-      body += `<h3>La carte</h3>` + info.sections.map((s) => `${s.title ? `<h4>${esc(s.title)}</h4>` : ""}<ul class="menu">${s.items.map((it) =>
-        `<li><span>${esc(it.name)}</span>${it.price != null ? `<b>${it.price.toFixed(2).replace(".", ",")} €</b>` : ""}</li>`).join("")}</ul>`).join("");
-      body += `<p class="src">Extrait automatiquement de <a href="${esc(info.menu_url)}" target="_blank" rel="noopener">leur site</a>, peut être incomplet ou daté.</p>`;
-    } else if (info?.pdfs?.length) {
-      body += `<h3>La carte</h3><ul>${info.pdfs.map((u, k) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">Menu (PDF ${k + 1})</a></li>`).join("")}</ul>`;
+    try { info = await getJSON(`api/poi/${encodeURIComponent(p.id)}`); } catch { /* unknown place */ }
+    openSide(head + render(info) + `<p class="src">© contributeurs OpenStreetMap</p>`);
+    for (let k = 0; info?.refreshing && k < 4; k++) {
+      await new Promise((r) => setTimeout(r, 2500 + k * 1500));
+      if (sideBody.dataset.poi !== p.id) return;   // the panel shows something else now
+      try { info = await getJSON(`api/poi/${encodeURIComponent(p.id)}`); } catch { break; }
+      if (!info.refreshing) openSide(head + render(info) + `<p class="src">© contributeurs OpenStreetMap</p>`);
     }
-    const site = t.website || t["contact:website"];
-    if (site) body += `<p><a href="${esc(site)}" target="_blank" rel="noopener">Site web</a></p>`;
-    if (!body) body = `<p>Pas encore d'infos sur ce lieu.</p>`;
-    openSide(head + body + `<p class="src">© contributeurs OpenStreetMap</p>`);
+    return;
   }
 };
 function tabs() {

@@ -14,6 +14,7 @@
 mod feeds;
 mod gtfs;
 mod l93;
+mod menus;
 mod planes;
 mod players;
 mod rt;
@@ -34,6 +35,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use futures_util::StreamExt;
 use prost::Message;
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -93,6 +95,9 @@ struct App {
     sncf: RwLock<Cached<Arc<sncf::Day>>>,
     sncf_delays: RwLock<Cached<HashMap<usize, Vec<i32>>>>,
     store: Arc<store::Store>,
+    menus: Arc<menus::Fetcher>,
+    /// places of the map (pois.json): id -> (name, kind, website)
+    pois: Arc<HashMap<String, (String, String, Option<String>)>>,
 }
 
 fn now() -> i64 {
@@ -104,7 +109,55 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
+    // `tinynantes-server menu <url>`: read one website the way the server does and print the result
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "menu-lines" {
+        for (l, h) in menus::debug_lines(&menus::Fetcher::new()?, &args[2]).await {
+            println!("{}{l}", if h { "# " } else { "" });
+        }
+        return Ok(());
+    }
+    if args.len() == 3 && args[1] == "menu" {
+        let f = menus::Fetcher::new()?;
+        let v = menus::fetch_place(&f, "test", "", "", &args[2]).await;
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
     let web = PathBuf::from(std::env::var("TN_WEB").unwrap_or_else(|_| "../web".into()));
+    if args.len() >= 2 && args[1] == "menus-crawl" {
+        // read every place with a website now (stats at the end); later reads stay lazy/nightly
+        let data = PathBuf::from(std::env::var("TN_DATA").unwrap_or_else(|_| "data".into()));
+        let places = std::env::var("TN_PLACES").map(PathBuf::from).unwrap_or_else(|_| data.join("places"));
+        std::fs::create_dir_all(&places)?;
+        let store = Arc::new(store::Store::open(&data.join("tinynantes.db"), places.clone())?);
+        let f = Arc::new(menus::Fetcher::new()?);
+        let pois = load_pois(&web);
+        let todo: Vec<_> = pois.iter().filter(|(_, p)| p.2.is_some()).map(|(id, p)| (id.clone(), p.clone())).collect();
+        let n = todo.len();
+        let stats = Arc::new(std::sync::Mutex::new(HashMap::<String, usize>::new()));
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        futures_util::stream::iter(todo).for_each_concurrent(12, |(id, (name, kind, site))| {
+            let (f, store, stats, done, places) = (f.clone(), store.clone(), stats.clone(), done.clone(), places.clone());
+            async move {
+                let mut v = menus::fetch_place(&f, &id, &name, &kind, site.as_deref().unwrap_or("")).await;
+                let key = if v.get("error").is_some() { "error".to_string() }
+                    else if v["sections"].as_array().is_some_and(|a| !a.is_empty()) { format!("menu:{}", v["source"].as_str().unwrap_or("")) }
+                    else if v["images"].as_array().is_some_and(|a| !a.is_empty()) { "images".into() }
+                    else if v["pdfs"].as_array().is_some_and(|a| !a.is_empty()) { "pdf links".into() }
+                    else if v["links"].as_array().is_some_and(|a| !a.is_empty()) { "platform links".into() }
+                    else { "nothing".into() };
+                *stats.lock().unwrap().entry(key).or_default() += 1;
+                // also as a seed file (shipped in the image: a fresh server has every menu before anyone asks)
+                let _ = std::fs::write(places.join(format!("{id}.json")), v.to_string());
+                let st = store.clone();
+                let _ = tokio::task::spawn_blocking(move || st.save_place(&id, &mut v)).await;
+                let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if k % 50 == 0 { eprintln!("{k}/{n} {:?}", stats.lock().unwrap()); }
+            }
+        }).await;
+        println!("{n} places: {:?}", stats.lock().unwrap());
+        return Ok(());
+    }
     let data = PathBuf::from(std::env::var("TN_DATA").unwrap_or_else(|_| "data".into()));
     let port: u16 = std::env::var("TN_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let origin = feeds::origin_from_world(&web.join("data/world/world.json"))?;
@@ -136,6 +189,8 @@ async fn main() -> anyhow::Result<()> {
         sky: Default::default(),
         sncf: Default::default(),
         sncf_delays: Default::default(),
+        menus: Arc::new(menus::Fetcher::new()?),
+        pois: Arc::new(load_pois(&web)),
     });
     let players = players::open(&app.data.join("tinynantes.db"))?;
 
@@ -146,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(every(app.clone(), 600, |a| Box::pin(refresh_weather(a))));
     tokio::spawn(planes::run(app.http.clone(), app.origin, app.sky.clone(), store.clone()));
     tokio::spawn(places_loop(store.clone()));
+    tokio::spawn(menus_nightly(app.clone()));
     tokio::spawn(sncf_loop(app.clone()));
     let web2 = web.clone();
     let sim = tokio::task::spawn_blocking(move || sim::build(&web2)).await??;
@@ -470,10 +526,72 @@ async fn poi(State(app): State<Arc<App>>, UrlPath(id): UrlPath<String>) -> Respo
         return (StatusCode::BAD_REQUEST, "bad id").into_response();
     }
     let st = app.store.clone();
-    match tokio::task::spawn_blocking(move || st.place(&id)).await.ok().flatten() {
-        Some(b) => json(Bytes::from(b)),
-        None => (StatusCode::NOT_FOUND, "{}").into_response(),
+    let id2 = id.clone();
+    let t = now();
+    let got = tokio::task::spawn_blocking(move || st.open_place(&id2, t)).await.ok().flatten();
+    let info = app.pois.get(&id).cloned();
+    let mut v: serde_json::Value = match (&got, &info) {
+        (Some((b, _)), _) => serde_json::from_str(b).unwrap_or_default(),
+        (None, Some((name, kind, site))) => serde_json::json!({"id": id, "name": name, "kind": kind, "website": site, "sections": []}),
+        (None, None) => return (StatusCode::NOT_FOUND, "{}").into_response(),
+    };
+    // read the website again when our copy is more than a day old (in the background: answer now)
+    let fetched = got.as_ref().and_then(|g| g.1);
+    if let Some((name, kind, Some(site))) = info {
+        if fetched.map_or(true, |f| t - f > menus::STALE) && app.menus.begin(&id) {
+            let app2 = app.clone();
+            tokio::spawn(refresh_place(app2, id.clone(), name, kind, site));
+        }
     }
+    v["refreshing"] = serde_json::json!(app.menus.busy(&id));
+    json(Bytes::from(v.to_string()))
+}
+
+async fn refresh_place(app: Arc<App>, id: String, name: String, kind: String, site: String) {
+    let mut v = menus::fetch_place(&app.menus, &id, &name, &kind, &site).await;
+    let st = app.store.clone();
+    let id2 = id.clone();
+    let _ = tokio::task::spawn_blocking(move || st.save_place(&id2, &mut v)).await;
+    app.menus.end(&id);
+}
+
+/// Every night at 4:00 (Paris), read again the places people opened in the last 30 days.
+async fn menus_nightly(app: Arc<App>) {
+    use chrono::TimeZone;
+    loop {
+        let now_p = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris);
+        let mut next = chrono_tz::Europe::Paris.from_local_datetime(&now_p.date_naive().and_hms_opt(4, 0, 0).unwrap()).single()
+            .unwrap_or(now_p);
+        if next <= now_p {
+            next = next + chrono::Duration::days(1);
+        }
+        tokio::time::sleep((next - now_p).to_std().unwrap_or(Duration::from_secs(3600))).await;
+        let st = app.store.clone();
+        let ids = tokio::task::spawn_blocking(move || st.viewed_since(now() - 30 * 86400)).await.unwrap_or_default();
+        tracing::info!("menus: nightly refresh of {} places", ids.len());
+        let todo: Vec<_> = ids.into_iter().filter_map(|id| {
+            let (name, kind, site) = app.pois.get(&id)?.clone();
+            Some((id, name, kind, site?))
+        }).collect();
+        futures_util::stream::iter(todo).for_each_concurrent(6, |(id, name, kind, site)| {
+            let app = app.clone();
+            async move {
+                if app.menus.begin(&id) {
+                    refresh_place(app, id, name, kind, site).await;
+                }
+            }
+        }).await;
+    }
+}
+
+fn load_pois(web: &std::path::Path) -> HashMap<String, (String, String, Option<String>)> {
+    let Ok(b) = std::fs::read(web.join("data/world/pois.json")) else { return HashMap::new() };
+    let v: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap_or_default();
+    v.into_iter().filter_map(|p| {
+        let t = &p["t"];
+        let site = t["website"].as_str().or(t["contact:website"].as_str()).map(str::to_string);
+        Some((p["id"].as_str()?.to_string(), (t["name"].as_str().unwrap_or("").to_string(), p["k"].as_str().unwrap_or("").to_string(), site)))
+    }).collect()
 }
 
 #[derive(serde::Deserialize)]
