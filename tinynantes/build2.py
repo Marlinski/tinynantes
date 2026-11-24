@@ -226,6 +226,48 @@ def assemble_all(h):
     print(f"h{h}: {n} tiles assembled", flush=True)
 
 
+def fix_estuary(h, min_water=0.03, max_blue=0.6):
+    """Repair assembled tiles where real water was painted as land (the muddy Loire downstream of Nantes: the
+    painter turned it into fields). Each tile with BD TOPO water is re-assembled from its painting first (so the
+    repair can be re-run), and if its water is mostly not blue, every pixel that is water both in BD TOPO and in the
+    3D render (uniform, coloured; bridges, quays and boats are grey or white there) gets the water colour."""
+    from scipy import ndimage
+    from .qa import WATER_RGB
+    art_dir = ROOT / "out" / f"h{h}" / "art"
+    src, _ = _dirs(h)
+    view, n = geo.View(h), 0
+    for i, j in view.tiles_for_area():
+        f = art_dir / f"{i}_{j}.png"
+        if not f.exists():
+            continue
+        wm = g3d.water_mask(i, j, view)[M:-M, M:-M]
+        if wm.mean() < min_water:
+            continue
+        t = assemble_tile(h, i, j)
+        if t is None:
+            continue
+        px = t.astype(int)[wm]
+        if (px[:, 2] > px[:, 0] + 15).mean() >= max_blue:
+            Image.fromarray(t).save(f)               # fine as painted
+            continue
+        ren = np.asarray(Image.open(src / f"{i}_{j}.png").convert("RGB")).astype("f4")[M:M + N, M:M + N]
+        sat = ren.max(-1) - ren.min(-1)
+        lum = ren.mean(-1)
+        local = ndimage.uniform_filter(lum, 9)
+        flat = np.abs(lum - local) < 14                  # water is smooth; bridges, boats, quays have edges
+        waterish = (sat > 10) & (ren.max(-1) < 215) & flat
+        m = ndimage.binary_erosion(wm, iterations=2) & ndimage.binary_opening(waterish, iterations=2)
+        a = t.astype("f4")
+        tex = np.clip((ren.mean(-1) - ndimage.uniform_filter(ren.mean(-1), 61)) / 80.0, -0.08, 0.08)   # ripples from the render
+        col = WATER_RGB[None, None, :] * (1.0 + tex[..., None])
+        soft = ndimage.gaussian_filter(m.astype("f4"), 1.5)[..., None]
+        out = np.clip(a * (1 - soft) + col * soft, 0, 255).astype("u1")
+        Image.fromarray(out).save(f)
+        n += 1
+        print(f"{i}_{j}: water recoloured ({m.mean():.2f} of the tile)", flush=True)
+    print(f"h{h}: {n} tiles repaired", flush=True)
+
+
 def main(argv):
     h = int(argv[0])
     what = argv[1] if len(argv) > 1 else "all"
@@ -233,6 +275,8 @@ def main(argv):
         paint_all(h)
     if what in ("assemble", "all"):
         assemble_all(h)
+    if what in ("estuary", "all"):
+        fix_estuary(h)
 
 
 if __name__ == "__main__":
