@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import math
 import time
 from pathlib import Path
@@ -42,7 +43,7 @@ _session = requests.Session()
 _session.headers["User-Agent"] = "tinynantes-map/0.1"
 
 
-def _get(url, params, tries=5):
+def _get(url, params, tries=8):
     for k in range(tries):
         try:
             # hard deadline for the whole body: a throttled server can trickle bytes forever
@@ -56,8 +57,15 @@ def _get(url, params, tries=5):
                         raise requests.Timeout("body took > 90 s")
                 ct = r.headers.get("content-type", "")
                 if r.status_code == 200 and not ct.startswith(("text/xml", "application/vnd.ogc.se")):
-                    return bytes(body)
-                err = f"{r.status_code} {bytes(body[:200])!r}"
+                    if params.get("OUTPUTFORMAT") != "application/json":
+                        return bytes(body)
+                    try:                       # under load the WFS answers 200 with an empty or truncated body
+                        json.loads(body)
+                        return bytes(body)
+                    except ValueError:
+                        err = f"bad JSON ({len(body)} bytes)"
+                else:
+                    err = f"{r.status_code} {bytes(body[:200])!r}"
         except requests.RequestException as e:
             err = str(e)
         time.sleep(2 * (k + 1))
@@ -75,7 +83,7 @@ def _wms(layer, bbox, w, h, fmt):
 def _atomic(f, write):
     """Write a cache file under a temporary name, then rename it: several processes (renders, world build,
     painting) read the same chunks, and must never see one half written."""
-    tmp = f.with_name(f".{f.stem}.{os.getpid()}.tmp{f.suffix}")
+    tmp = f.with_name(f".{f.stem}.{os.getpid()}.{threading.get_ident()}.tmp{f.suffix}")
     write(tmp)
     os.replace(tmp, f)
 
