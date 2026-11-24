@@ -9,7 +9,7 @@ v="$(date -u +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)"
 printf '{"version":"%s","headings":%s}\n' "$v" "$(cat web/data/headings.json)" > web/version.json
 mkdir -p dist server/data/places
 tar -czf "dist/tinynantes-context-$v.tar.gz" \
-  --exclude='*.tmp.png' --exclude='web/data/world/roads.json' \
+  --exclude='*.tmp.png' \
   --transform 's,^deploy/Dockerfile$,Dockerfile,' --transform 's,^server/data/places,places,' \
   deploy/Dockerfile server/Cargo.toml server/Cargo.lock server/rust-toolchain.toml server/src server/data/places web
 ls -lh "dist/tinynantes-context-$v.tar.gz"
