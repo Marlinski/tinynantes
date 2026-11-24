@@ -42,7 +42,7 @@
   <button id="turnR" title="Tourner à droite (E)">⟳</button>
   <hr>
   <button id="tiltBtn" title="Effet tilt-shift (D)" aria-pressed="true">◎</button>
-  <button id="labelsBtn" title="Lieux (L)" aria-pressed="true">⚑</button>
+  <button id="layersBtn" title="Calques : choisir ce qui s'affiche" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 2.5 8 12 13l9.5-5z"/><path d="m2.5 12 9.5 5 9.5-5"/><path d="m2.5 16 9.5 5 9.5-5"/></svg></button>
   <button id="liveBtn" title="En direct : trams, bus, trains, avions, trafic, événements" aria-pressed="true">◉</button>
   <button id="playBtn" title="Jouer : se promener, prendre le tram, entrer dans les restos" aria-pressed="false">🚶</button>
   <button id="share" title="Partager cette vue">⇪</button>
@@ -57,9 +57,19 @@
   <p>Nantes en pixel art isométrique. Glisser pour se déplacer, molette ou pincer pour zoomer.</p>
   <p>Relief et bâti : LiDAR HD, BD TOPO et BD ORTHO de l'IGN (Licence Ouverte), mis en volume puis redessinés tuile par tuile par un modèle d'image (FLUX.2 klein).</p>
   <p>Inspiré par <a href="https://tinylasvegas.com" target="_blank" rel="noopener">tinylasvegas.com</a> et <a href="https://tinyrj.com" target="_blank" rel="noopener">tinyrj.com</a>.</p>
-  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; trains SNCF ; avions en ADS-B ; agenda de la Ville de Nantes ; ciel, pluie et lumière du moment (Open-Meteo, position du soleil) ; cartes des restaurants lues sur leurs propres sites.</p>
+  <p>En direct : trams, bus et Navibus d'après les horaires Naolib corrigés en temps réel ; voitures d'après les comptages de trafic de Nantes Métropole ; trains SNCF ; avions en ADS-B ; agenda de la Ville de Nantes et de pullrouge.fr ; ciel, pluie et lumière du moment (Open-Meteo, position du soleil) ; cartes des restaurants lues sur leurs propres sites.</p>
   <p>Appuie sur 🚶 pour te promener : à pied, à vélo, en voiture, en tram.</p>
-  <p class="credit">Données © IGN – Géoplateforme · Adresses : BAN · Naolib, Nantes Métropole (ODbL) · SNCF open data · adsb.lol (ODbL), adsbdb.com · © contributeurs OpenStreetMap (ODbL)</p>
+  <p class="credit"><a href="#" id="aboutSources">Toutes les sources et attributions</a></p>
+</aside>
+<aside id="layers" class="panel layers" hidden>
+  <button class="close" aria-label="Fermer">×</button>
+  <h2>Calques</h2>
+  <div id="layerList"></div>
+</aside>
+<aside id="sources" class="panel sources" hidden>
+  <button class="close" aria-label="Fermer">×</button>
+  <h2>Sources et attributions</h2>
+  <div id="sourceList"></div>
 </aside>
 <aside id="side" class="side" hidden aria-live="polite">
   <button id="sideClose" class="close" aria-label="Fermer">×</button>
@@ -98,7 +108,7 @@
 </div>
 <div id="talkHint" class="talkhint" hidden><kbd>E</kbd> parler</div>
   <div id="toast" class="toast" hidden></div>
-<div class="credit-badge">© IGN</div>
+<button id="creditBtn" class="credit-badge" title="Sources et attributions">© Sources</button>
 <script src="app.js" type="module"></script>
 <script src="live.js" type="module"></script>
 <script src="game.js" type="module"></script>

@@ -140,7 +140,7 @@ live.open = async (kind, d) => {
       <h2>${esc(e.name)}</h2><p><b>${esc(e.date)} ${esc(e.start || "")}${e.end ? "–" + esc(e.end) : ""}</b>${e.free ? " · gratuit" : ""}${e.full ? " · complet" : ""}</p>
       <p>${esc(e.place)}<br><small>${esc(e.address)}</small></p><p>${esc(e.summary)}</p>
       ${e.url ? `<p><a href="${esc(e.url)}" target="_blank" rel="noopener">Plus d'infos</a></p>` : ""}
-      <p class="src">Agenda de Nantes Métropole</p>`);
+      <p class="src">${e.source === "pullrouge.fr" ? `Agenda <a href="https://www.pullrouge.fr/" target="_blank" rel="noopener">pullrouge.fr</a>` : "Agenda de Nantes Métropole"}</p>`);
   } else if (kind === "poi") {
     const p = d, t = p.t;
     sideBody.dataset.poi = p.id;

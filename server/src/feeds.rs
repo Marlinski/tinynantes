@@ -91,6 +91,8 @@ pub struct Event {
     pub url: Option<String>,
     pub image: Option<String>,
     pub p: [f64; 2],
+    /// where it comes from (credited in the viewer)
+    pub source: String,
 }
 
 /// Events of today and tomorrow (Paris time) that have a location.
@@ -124,6 +126,7 @@ pub async fn events(http: &reqwest::Client, o: Origin) -> Result<Vec<Event>> {
             url: s(&r["lien_agenda"]).or_else(|| s(&r["url_site"])),
             image: s(&r["media_url"]),
             p: rel(o, lon, lat),
+            source: "Nantes Métropole".into(),
         });
     }
     Ok(out)

@@ -19,6 +19,7 @@ mod menus;
 mod news;
 mod people;
 mod planes;
+mod pullrouge;
 mod players;
 mod rt;
 mod sim;
@@ -377,7 +378,22 @@ async fn refresh_traffic(app: Arc<App>) {
 }
 
 async fn refresh_events(app: Arc<App>) {
-    let r = feeds::events(&app.http, app.origin).await.and_then(|v| Ok(Bytes::from(serde_json::to_vec(&v)?)));
+    // the city's open agenda, plus the concerts and nights of pullrouge.fr (skipping what the city already lists)
+    let r = match feeds::events(&app.http, app.origin).await {
+        Ok(mut v) => {
+            match pullrouge::events(&app.http, app.origin, &app.web).await {
+                Ok(extra) => {
+                    let seen: std::collections::HashSet<String> = v.iter().map(|e| pullrouge::norm(&e.name)).collect();
+                    let n = extra.len();
+                    v.extend(extra.into_iter().filter(|e| !seen.contains(&pullrouge::norm(&e.name))));
+                    tracing::info!("events: {} ({n} from pullrouge.fr)", v.len());
+                }
+                Err(e) => tracing::warn!("pullrouge: {e:#}"),
+            }
+            serde_json::to_vec(&v).map(Bytes::from).map_err(anyhow::Error::from)
+        }
+        Err(e) => Err(e),
+    };
     if let Err(e) = &r {
         tracing::warn!("events: {e:#}");
     }

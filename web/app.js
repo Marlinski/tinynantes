@@ -14,7 +14,23 @@ let man, places = [], dpr = 1;
 const view = { x: 0, y: 0, s: 1 };     // centre (metres) and scale (CSS px per metre)
 let minS = 0.05, maxS = 8;
 let marker = null;                      // { x, y, name }
-let showLabels = true;
+// ---------------------------------------------------------------- layers (the ≡ button): what the map shows
+// [key, label, on by default]; the choice is remembered per browser. TN.layer(key) is read by live.js and game.js.
+const LAYERS = [
+  ["places", "Lieux remarquables", false],
+  ["pois", "Restos, bars et commerces", false],
+  ["events", "Événements du jour", false],
+  ["transit", "Trams, bus et Navibus", true],
+  ["trains", "Trains", true],
+  ["planes", "Avions", true],
+  ["people", "Habitants, vélos et voitures", true],
+  ["bikes", "Stations Naolib Vélo", true],
+  ["boats", "Bateaux", true],
+  ["elephant", "Le Grand Éléphant", true],
+];
+const layerState = Object.fromEntries(LAYERS.map(([k, , on]) => [k, on]));
+try { Object.assign(layerState, JSON.parse(localStorage.getItem("tn-layers") || "{}")); } catch { /* private mode */ }
+const layerOn = (k) => layerState[k] !== false;
 const cache = new Map();                // "L/i_j" -> { img, ready }
 let dirty = true;
 // shared with live.js (animated layer)
@@ -127,7 +143,7 @@ function drawLabels() {
   lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   lctx.clearRect(0, 0, innerWidth, innerHeight);
   const pins = [];
-  if (showLabels && view.s > minS * 2.2) for (const p of places) pins.push({ ...p, kind: "place" });
+  if (TN.layer("places") && view.s > minS * 2.2) for (const p of places) pins.push({ ...p, kind: "place" });
   if (marker) pins.push({ ...marker, kind: "marker" });
   for (const p of pins) [p.sx, p.sy] = l93ToScreen(p.x, p.y);
   lctx.font = "600 12px Geist, system-ui, sans-serif";
@@ -259,7 +275,6 @@ addEventListener("keydown", (e) => {
   else if (k === "ArrowDown") { view.y += step; dirty = true; }
   else if (k === "/") { e.preventDefault(); $("q").focus(); }
   else if (k === "d" || k === "D") toggleTilt();
-  else if (k === "l" || k === "L") toggleLabels();
   else if (k === "q" || k === "Q" || k === ",") turn(1);
   else if (k === "e" || k === "E" || k === ".") turn(-1);
   else return;
@@ -314,19 +329,71 @@ function toggleTilt() {
   const b = $("tiltBtn"), on = b.getAttribute("aria-pressed") !== "true";
   b.setAttribute("aria-pressed", on); $("tilt").hidden = !on;
 }
-function toggleLabels() {
-  const b = $("labelsBtn"); showLabels = b.getAttribute("aria-pressed") !== "true";
-  b.setAttribute("aria-pressed", showLabels); dirty = true;
+function buildLayers() {
+  $("layerList").innerHTML = LAYERS.map(([k, label]) =>
+    `<label class="layer"><input type="checkbox" data-k="${k}" ${layerState[k] ? "checked" : ""}> ${label}</label>`).join("");
+  $("layerList").onchange = (e) => {
+    const k = e.target.dataset.k; if (!k) return;
+    layerState[k] = e.target.checked; dirty = true;
+    try { localStorage.setItem("tn-layers", JSON.stringify(layerState)); } catch { /* private mode */ }
+  };
 }
+buildLayers();
+TN.layer = layerOn;
+function togglePanel(id, btn) {
+  const p = $(id), open = p.hidden;
+  for (const o of ["layers", "sources", "about"]) $(o).hidden = true;
+  p.hidden = !open; if (btn) $(btn).setAttribute("aria-expanded", open);
+}
+$("layersBtn").onclick = () => togglePanel("layers", "layersBtn");
+$("layers").querySelector(".close").onclick = () => { $("layers").hidden = true; };
+
+// ---------------------------------------------------------------- sources and attributions (the © badge)
+const SOURCES = [
+  ["Carte", [
+    ["IGN – Géoplateforme", "LiDAR HD, BD TOPO, BD ORTHO : relief, bâti et eau", "Licence Ouverte Etalab 2.0", "https://geoservices.ign.fr/"],
+    ["© contributeurs OpenStreetMap", "rues, chemins, lieux, restaurants et commerces", "ODbL", "https://www.openstreetmap.org/copyright"],
+    ["Base Adresse Nationale", "recherche d'adresses", "Licence Ouverte Etalab 2.0", "https://adresse.data.gouv.fr/"],
+    ["FLUX.2 [klein] (Black Forest Labs)", "le dessin en pixel art, tuile par tuile", "", "https://bfl.ai/"],
+  ]],
+  ["En direct", [
+    ["Naolib / Nantes Métropole", "horaires et temps réel des trams, bus et Navibus", "ODbL", "https://data.nantesmetropole.fr/"],
+    ["Nantes Métropole", "comptages et vitesses du trafic routier, agenda", "ODbL", "https://data.nantesmetropole.fr/"],
+    ["Naolib Vélo (JCDecaux)", "disponibilité des stations de vélos", "open data GBFS", "https://www.naolib.fr/"],
+    ["SNCF Voyageurs", "horaires TER, Intercités et TGV", "ODbL", "https://ressources.data.sncf.com/"],
+    ["transport.data.gouv.fr", "relais des flux temps réel", "", "https://transport.data.gouv.fr/"],
+    ["adsb.fi", "positions des avions (ADS-B)", "open data", "https://adsb.fi/"],
+    ["adsb.lol", "positions des avions (ADS-B), en secours", "ODbL", "https://adsb.lol/"],
+    ["adsbdb.com", "provenance et destination des vols", "", "https://www.adsbdb.com/"],
+    ["Open-Meteo", "météo du moment", "CC BY 4.0", "https://open-meteo.com/"],
+    ["pullrouge.fr", "agenda des concerts et soirées", "", "https://www.pullrouge.fr/"],
+    ["Les Machines de l'île", "horaires des balades du Grand Éléphant", "", "https://www.lesmachines-nantes.fr/"],
+  ]],
+  ["Habitants", [
+    ["20 Minutes, Ouest-France, France 3 Pays de la Loire", "titres de l'actualité locale dont ils parlent (flux RSS)", "", ""],
+    ["Hoodmaps", "la réputation des quartiers selon leurs habitants", "", "https://hoodmaps.com/nantes-neighborhood-map"],
+    ["Sites des restaurants", "cartes et menus, lus sur leurs propres sites", "", ""],
+    ["OpenRouter (Gemma, Mistral)", "leurs répliques quand on leur parle", "", "https://openrouter.ai/"],
+  ]],
+];
+function buildSources() {
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  $("sourceList").innerHTML = SOURCES.map(([title, rows]) => `<h3>${title}</h3><ul>${rows.map(([name, what, lic, url]) =>
+    `<li><b>${url ? `<a href="${url}" target="_blank" rel="noopener">${esc(name)}</a>` : esc(name)}</b> — ${esc(what)}${lic ? ` <span class="lic">${esc(lic)}</span>` : ""}</li>`).join("")}</ul>`).join("") +
+    `<p class="src">Inspiré par <a href="https://tinylasvegas.com" target="_blank" rel="noopener">tinylasvegas.com</a> et <a href="https://tinyrj.com" target="_blank" rel="noopener">tinyrj.com</a>.</p>`;
+}
+buildSources();
+$("creditBtn").onclick = () => togglePanel("sources");
+$("aboutSources").onclick = (e) => { e.preventDefault(); togglePanel("sources"); };
+$("sources").querySelector(".close").onclick = () => { $("sources").hidden = true; };
 $("tiltBtn").onclick = toggleTilt;
 $("liveBtn").onclick = () => { const b = $("liveBtn"); b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") !== "true"); };
-$("labelsBtn").onclick = toggleLabels;
 $("share").onclick = async () => {
   writeHash();
   try { if (navigator.share && matchMedia("(pointer: coarse)").matches) { await navigator.share({ title: document.title, url: location.href }); return; } } catch { return; }
   try { await navigator.clipboard.writeText(location.href); toast("Lien copié"); } catch { prompt("Lien", location.href); }
 };
-$("info").onclick = () => { $("about").hidden = !$("about").hidden; };
+$("info").onclick = () => togglePanel("about");
 $("about").querySelector(".close").onclick = () => { $("about").hidden = true; };
 // ---------------------------------------------------------------- light mode, for modest computers
 // No blur effects (tilt-shift, frosted panels), 1x resolution, live layer at 30 fps, light and weather at 10 fps.

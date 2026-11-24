@@ -173,6 +173,16 @@ body.playing .mini, body.playing .search { display: none; }
 .altbtns { position: fixed; right: 84px; bottom: 120px; display: flex; flex-direction: column; gap: 8px; }
 .altbtns button { width: 52px; height: 52px; border-radius: 50%; border: 0; background: rgb(20 24 30 / .8); color: #fff; font-size: 20px; }
 
+/* layers and sources panels */
+.layers, .sources { right: 84px; left: auto; top: 16px; transform: none; width: min(340px, calc(100vw - 112px)); max-height: calc(100vh - 40px); overflow-y: auto; }
+.layers .layer { display: flex; align-items: center; gap: 10px; padding: 5px 0; cursor: pointer; }
+.layers .layer input { width: 18px; height: 18px; accent-color: var(--accent); }
+.sources h3 { margin: 14px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+.sources ul { margin: 0; padding-left: 18px; }
+.sources li { margin: 4px 0; line-height: 1.4; }
+.sources .lic { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 8px; background: rgb(255 255 255 / .1); }
+button.credit-badge { border: 0; cursor: pointer; font-family: inherit; }
+
 /* debug panel: time of day and weather overrides (F9) */
 .dbg { position: fixed; left: 16px; top: 110px; z-index: 50; background: rgba(20,24,28,.92); color: #e8eaed; padding: 10px 12px;
   border-radius: 10px; font: 12px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; gap: 6px; width: 260px; }

@@ -808,7 +808,7 @@ function placeItems(t, rect) {
     if (inRect(sx, sy, rect)) out.push({ sx, sy, h: 0, overlay: true, draw: () => pin(sx, sy, "✈"),
       hit: { r: 16, dy: -18, open: () => live.open?.("airport", {}) }, tip: () => ["Aéroport Nantes Atlantique", "décollages et atterrissages"] });
   }
-  if (TN.view.s >= 0.35) for (const e of events) {
+  if (TN.view.s >= 0.35 && TN.layer?.("events") !== false) for (const e of events) {
     const [sx, sy] = project(e.p[0], e.p[1], zAt(e.p[0], e.p[1]));
     if (!inRect(sx, sy, rect)) continue;
     out.push({ sx, sy, h: 0, overlay: true, draw: () => {
@@ -845,12 +845,18 @@ function frame(now) {
   const t = live.now(), rect = visibleRect();
   let items = [];
   if (on) {
-    items.push(...planeItems(t, visibleRect(4000)));
-    if (TN.view.s >= 0.6 || TN.playing) items.push(...transitItems(t, rect), ...trainItems(t, rect), ...inhabitantItems(t, rect));
-    items.push(...placeItems(t, rect), ...poiItems(t, rect));
-    if (TN.view.s >= 0.8 || TN.playing) items.push(...bikeStationItems(t, rect));
-    if (TN.view.s >= 0.3 || TN.playing) items.push(...elephantItems(t, visibleRect(60)));
-    if (TN.view.s >= 0.3 || TN.playing) items.push(...boatItems(t, visibleRect(300)));
+    const L = (k) => TN.layer?.(k) ?? true;                        // the layers panel (app.js)
+    if (L("planes")) items.push(...planeItems(t, visibleRect(4000)));
+    if (TN.view.s >= 0.6 || TN.playing) {
+      if (L("transit")) items.push(...transitItems(t, rect));
+      if (L("trains")) items.push(...trainItems(t, rect));
+      if (L("people")) items.push(...inhabitantItems(t, rect));
+    }
+    items.push(...placeItems(t, rect));
+    if (L("pois")) items.push(...poiItems(t, rect));
+    if (L("bikes") && (TN.view.s >= 0.8 || TN.playing)) items.push(...bikeStationItems(t, rect));
+    if (L("elephant") && (TN.view.s >= 0.3 || TN.playing)) items.push(...elephantItems(t, visibleRect(60)));
+    if (L("boats") && (TN.view.s >= 0.3 || TN.playing)) items.push(...boatItems(t, visibleRect(300)));
   }
   for (const f of live.layers) items.push(...f(t, rect));
   const world3d = items.filter((i) => !i.overlay).sort((a, b) => a.sy - b.sy);   // painter's order
