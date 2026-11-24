@@ -408,6 +408,45 @@ function moveJoy(e) {
   pad.style.setProperty("--jx", `${dx * R * 0.6}px`); pad.style.setProperty("--jy", `${dy * R * 0.6}px`);
 }
 
+// What's around: the closest named place within reach, and the transit vehicle at a stop next to you.
+const REACH = 16;
+function nearestPlace(x, y, r = REACH) {
+  let bp = null, bd = r;
+  for (const p of live.world.pois) {
+    if (!p.t?.name) continue;
+    const d = Math.hypot(p.p[0] - x, p.p[1] - y);
+    if (d < bd) { bd = d; bp = p; }
+  }
+  return bp;
+}
+let hintKey = "";
+function updateHint() {
+  const el = $("hint");
+  let txt = "", key = "";
+  if (TN.playing && !me.ride && me.mode !== "car") {
+    const p = nearestPlace(me.x, me.y);
+    if (p) { key = p.id; txt = `Entrer · ${p.t.name}`; }
+  } else if (me.ride) { key = "ride"; txt = "Descendre au prochain arrêt"; }
+  if (key === hintKey) return;
+  hintKey = key;
+  el.hidden = !txt;
+  el.innerHTML = txt ? `<kbd>E</kbd>${esc(txt)}` : "";
+}
+$("hint").onclick = () => action();
+// walking into a building next to a place = going in (once, until you've walked away)
+let insideId = null;
+function bumpInto(tx, ty) {
+  if (me.mode !== "walk") return;
+  const n = navAt(tx, ty);
+  if (!n || !(n.f & F_BUILDING)) return;
+  const p = nearestPlace(tx, ty, 12);
+  if (!p || p.id === insideId) return;
+  insideId = p.id;
+  me.v = 0;
+  toast(`Tu entres : ${p.t.name}`);
+  live.open("poi", p);
+}
+
 // E: get on / off transit, or go into the place in front of you
 function action() {
   const t = live.now();
@@ -432,13 +471,9 @@ function action() {
       toast(`Tu montes : ${r.short || ""} → ${best.v.headsign}`); hud(); return;
     }
   }
-  // places: the closest one within 18 m
-  let bp = null, bd = 18;
-  for (const p of live.world.pois) {
-    const d = Math.hypot(p.p[0] - me.x, p.p[1] - me.y);
-    if (d < bd) { bd = d; bp = p; }
-  }
-  if (bp) { live.open("poi", bp); return; }
+  // places: the closest one within reach
+  const bp = nearestPlace(me.x, me.y, REACH + 4);
+  if (bp) { insideId = bp.id; live.open("poi", bp); return; }
   const st = live.world.rails?.station;
   if (st && Math.hypot(st[0] - me.x, st[1] - me.y) < 80) { live.open("station"); return; }
   toast("Rien ici. Approche-toi d'un arrêt (tram, bus, Navibus) ou d'un lieu.");
@@ -480,7 +515,8 @@ function step() {
         const vmax = me.mode === "bike" ? SPEED.bike : run ? SPEED.run : SPEED.walk;
         me.v = Math.min(vmax * mag, me.v + (me.mode === "bike" ? 2.5 : 6) * dt);
         me.a = Math.atan2(wy, wx);
-        moveBy(wx * me.v * dt, wy * me.v * dt);
+        if (!moveBy(wx * me.v * dt, wy * me.v * dt) || !walkable(me.mode, me.x + wx * 0.6, me.y + wy * 0.6))
+          bumpInto(me.x + wx * 0.8, me.y + wy * 0.8);
       } else me.v = Math.max(0, me.v - 8 * dt);
     }
     me.z = groundZ(me.x, me.y);
@@ -490,6 +526,13 @@ function step() {
   TN.follow(v.x + (sx - v.x) * k, v.y + (sy - v.y) * k);
   sendPos();
   if (now - (step.hudAt || 0) > 500) { step.hudAt = now; hud(); }
+  if (now - (step.hintAt || 0) > 250) {
+    step.hintAt = now; updateHint();
+    if (insideId) {                                  // walked away: the next bump enters again
+      const p = live.world.pois.find((q) => q.id === insideId);
+      if (!p || Math.hypot(p.p[0] - me.x, p.p[1] - me.y) > 25) insideId = null;
+    }
+  }
 }
 function moveBy(dx, dy) {
   const m = me.mode;

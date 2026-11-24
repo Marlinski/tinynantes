@@ -112,8 +112,10 @@ function drawLights(G) {
   if (lamps && TN.view.s > 0.25) {
     const img = glowSprite(LAMP), r = Math.max(4, 11 * s);
     for (const [x, y, z] of lamps) {
-      const [cx, cy] = live.toCanvas(...live.project(x, y, z));
-      if (inView(cx, cy, r)) glow(img, cx, cy, r, 0.55 * k);
+      const [sx, sy] = live.project(x, y, z + 4);              // the lamp head, 4 m up
+      const [cx, cy] = live.toCanvas(sx, sy);
+      // hidden behind a building (height maps): no glow over the roofs in front
+      if (inView(cx, cy, r) && !live.occluded(sx, sy, live.project(x, y, z)[1])) glow(img, cx, cy, r, 0.55 * k);
     }
   }
   // lit bars and restaurants in the evening
@@ -121,8 +123,10 @@ function drawLights(G) {
     const img = glowSprite(WINDOW), r = Math.max(3, 8 * s);
     for (const p of live.world.pois) {
       if (!NIGHTLIFE.has(p.k)) continue;
-      const [cx, cy] = live.toCanvas(...live.project(...p.p));
-      if (inView(cx, cy, r)) glow(img, cx, cy - 2 * s, r, 0.7 * k);
+      const [x, y, z] = p.p;
+      const [sx, sy] = live.project(x, y, z + 2);
+      const [cx, cy] = live.toCanvas(sx, sy);
+      if (inView(cx, cy, r) && !live.occluded(sx, sy, live.project(x, y, z)[1])) glow(img, cx, cy, r, 0.7 * k);
     }
   }
   // vehicles
