@@ -61,7 +61,10 @@ def paint_one(h, i, j):
     f = dst / f"{i}_{j}.png"
     if f.exists():
         return False
-    ren = Image.open(src / f"{i}_{j}.png").convert("RGB")
+    try:
+        ren = Image.open(src / f"{i}_{j}.png").convert("RGB")
+    except OSError:                                   # a render still being written: next pass
+        return False
     rn = np.asarray(ren)
     bm = g3d.building_mask(i, j, geo.View(h))
     rural = bm[M:-M, M:-M].mean() < RURAL_BELOW
