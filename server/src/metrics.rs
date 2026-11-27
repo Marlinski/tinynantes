@@ -26,6 +26,7 @@ const HELP: &[(&str, &str, &str)] = &[
     ("tn_knockdowns_total", "counter", "Inhabitants run over by players"),
     ("tn_carjacks_total", "counter", "Vehicles taken from inhabitants by players, by what (car, service, bike)"),
     ("tn_impacts_refused_total", "counter", "Collision reports from players the server found implausible, by kind"),
+    ("tn_bikes_left_total", "counter", "Naolib Vélos players left in the street (the Naolib van takes them back to a station)"),
     ("tn_service_dispatches_total", "counter", "Service vehicles sent to a scene, by service"),
     ("tn_sim_reroutes_total", "counter", "Sim cars that turned round out of a jam to find another way"),
     ("tn_debug_actions_total", "counter", "Debug panel actions accepted, by action"),

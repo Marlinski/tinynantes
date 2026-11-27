@@ -153,6 +153,33 @@ impl Graph {
         best
     }
 
+    /// Up to `k` nodes for `mode` within `r` of (x, y), nearest first.
+    pub fn nearest_k(&self, x: f32, y: f32, mode: u8, r: f32, k: usize) -> Vec<u32> {
+        let (cx, cy) = ((x / CELL).floor() as i32, (y / CELL).floor() as i32);
+        let c = (r / CELL).ceil() as i32;
+        let mut all = vec![];
+        for gx in cx - c..=cx + c {
+            for gy in cy - c..=cy + c {
+                for &n in self.grid.get(&(gx, gy)).into_iter().flatten() {
+                    let p = self.xyz[n as usize];
+                    let d = (p[0] - x).powi(2) + (p[1] - y).powi(2);
+                    if d < r * r && self.node_modes(n) & mode != 0 {
+                        all.push((d, n));
+                    }
+                }
+            }
+        }
+        all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+        all.dedup_by_key(|e| e.1);
+        all.into_iter().take(k).map(|e| e.1).collect()
+    }
+
+    /// A drive from `from` to near (x, y): the nearest street node that can be reached (the very nearest can be
+    /// a dead end or the wrong way down a one-way street).
+    pub fn drive_to(&self, from: u32, x: f32, y: f32) -> Option<Vec<u32>> {
+        self.nearest_k(x, y, DRIVE, 250.0, 8).into_iter().find_map(|to| self.route(from, to, DRIVE, 20000))
+    }
+
     /// A* shortest path for `mode` (time for cars, distance otherwise); gives up after `budget` expansions
     pub fn route(&self, a: u32, b: u32, mode: u8, budget: usize) -> Option<Vec<u32>> {
         self.route_avoid(a, b, mode, budget, &[])
@@ -254,13 +281,13 @@ pub enum Kind {
     Car = 0,
     Walker = 1,
     Bike = 2,
-    /// service vehicles; variant byte = service (0 ambulance, 1 police, 2 fire, 3 tow truck, 4 street cleaning)
-    /// + 8 × siren + 16 × loaded (a tow truck carrying a wreck)
+    /// service vehicles; variant byte = service (0 ambulance, 1 police, 2 fire, 3 tow truck, 4 street cleaning,
+    /// 5 Naolib van) + 8 × siren + 16 × loaded (a tow truck carrying a wreck, a van carrying a bike)
     Emergency = 3,
     /// a pedestrian in a demonstration; variant = role (0 marcher, 1 batucada drummer, 2 placard) + 4 × colour
     Marcher = 4,
     /// what a crash leaves: a burnt-out car or someone knocked down; variant = model (0..15, the car's variant
-    /// byte) + 16 × person + 32 × burning (the first minutes)
+    /// byte) + 16 × person + 32 × burning (the first minutes); 128: a Naolib Vélo a player left in the street
     Wreck = 5,
     /// a scorch mark on the ground after an explosion, until the street cleaners come (24 h)
     Mark = 6,
@@ -282,6 +309,10 @@ pub struct PlayerIn {
 const MAX_SERVICE: usize = 20; // service vehicles on the map at once, all kinds; beyond that nobody comes
 const MARK_TTL: f64 = 24.0 * 3600.0; // scorch marks stay a day, then the street cleaners come
 const TOW_AFTER: f64 = 150.0; // the tow truck is called this long after a crash
+const FETCH_AFTER: f64 = 45.0; // the Naolib van comes for a bike left in the street this long after
+const MAX_LEFT_BIKES: usize = 40; // bikes left in the street at once (beyond that, the oldest is taken back at once)
+/// a Naolib Vélo left in the street (Wreck variant)
+pub const LEFT_BIKE: u8 = 128;
 /// where the tow trucks (when no police station is near) and the street cleaners start from: a fictional
 /// municipal depot on the Île de Nantes (local metres)
 const DEPOT: [f32; 2] = [-1450.0, -1250.0];
@@ -353,8 +384,10 @@ struct Agent {
     /// wrecks and marks: when it happened; people: running away until then
     since: f64,
     scared_until: f64,
-    /// a tow truck carrying a wreck back
+    /// a tow truck carrying a wreck back, a Naolib van a bike
     loaded: bool,
+    /// a bike left in the street, and the Naolib van taking it: the station it goes back to
+    dest: Option<[f32; 2]>,
     /// cars: seconds spent at a standstill (a jam: after a while they turn round and find another way)
     stuck: f32,
 }
@@ -705,6 +738,7 @@ impl Sim {
             since: 0.0,
             scared_until: 0.0,
             loaded: false,
+            dest: None,
             stuck: 0.0,
         });
         self.agents.last_mut().unwrap()
@@ -1225,15 +1259,14 @@ impl Sim {
         if self.service_count() >= MAX_SERVICE {
             return None;
         }
-        let to = self.g.nearest(x, y, DRIVE, 250.0)?;
-        let from_kind = match service { 3 => 1, 4 => 99, s => s };
+        let from_kind = match service { 3 => 1, 4 | 5 => 99, s => s };
         let mut homes: Vec<u32> = self.bases.iter().filter(|b| b.service == from_kind).map(|b| b.node).collect();
         if service >= 3 {
             homes.extend(self.g.nearest(DEPOT[0], DEPOT[1], DRIVE, 300.0));
         }
         let d = |n: &u32| { let p = self.g.xyz[*n as usize]; (p[0] - x).powi(2) + (p[1] - y).powi(2) };
         homes.sort_by(|a, b| d(a).partial_cmp(&d(b)).unwrap_or(Ordering::Equal));
-        let (home, path) = homes.iter().take(3).find_map(|&h| self.g.route(h, to, DRIVE, 20000).map(|p| (h, p)))?;
+        let (home, path) = homes.iter().take(3).find_map(|&h| self.g.drive_to(h, x, y).map(|p| (h, p)))?;
         if path.len() < 2 {
             return None;
         }
@@ -1246,7 +1279,9 @@ impl Sim {
         ag.job = Some((target, 0));
         ag.home = home;
         let id = ag.id;
-        crate::metrics::inc("tn_service_dispatches_total", &[("service", ["ambulance", "police", "fire", "tow", "cleaning"][service as usize])], 1.0);
+        let dest = self.agents.iter().find(|w| w.id == target).and_then(|w| w.dest);
+        self.agents.last_mut().unwrap().dest = dest;
+        crate::metrics::inc("tn_service_dispatches_total", &[("service", ["ambulance", "police", "fire", "tow", "cleaning", "naolib"][service as usize])], 1.0);
         Some(id)
     }
 
@@ -1256,7 +1291,7 @@ impl Sim {
         let service = self.agents[k].service;
         match phase {
             0 => {
-                let stay = match service { 0 => 150.0, 1 => 240.0, 2 => 200.0, 3 => 40.0, _ => 90.0 };
+                let stay = match service { 0 => 150.0, 1 => 240.0, 2 => 200.0, 3 => 40.0, 5 => 15.0, _ => 90.0 };
                 let a = &mut self.agents[k];
                 a.hold_until = now + stay;
                 a.face = a.path.windows(2).last().map(|w| {
@@ -1307,21 +1342,24 @@ impl Sim {
                 if let Some(t) = self.agents.iter().position(|w| w.id == target) {
                     let w = &self.agents[t];
                     let take = match (service, w.kind) {
-                        (3, Kind::Wreck) => w.service & 16 == 0,
+                        (3, Kind::Wreck) => w.service & (16 | LEFT_BIKE) == 0,
                         (0, Kind::Wreck) => w.service & 16 != 0,
+                        (5, Kind::Wreck) => w.service & LEFT_BIKE != 0,
                         (4, Kind::Mark) => true,
                         _ => false,
                     };
                     if take {
                         done.push(t);
-                        if service == 3 {
+                        if service == 3 || service == 5 {
                             self.agents[k].loaded = true;
                         }
                     }
                 }
                 let here = *self.agents[k].path.last().unwrap();
+                let station = if service == 5 && self.agents[k].loaded { self.agents[k].dest } else { None };
                 let home = self.agents[k].home;
-                match self.g.route(here, home, DRIVE, 20000) {
+                let to_station = station.and_then(|p| self.g.drive_to(here, p[0], p[1]));
+                match to_station.or_else(|| self.g.route(here, home, DRIVE, 20000)) {
                     Some(p) if p.len() >= 2 => {
                         let a = &mut self.agents[k];
                         a.path = p;
@@ -1336,8 +1374,51 @@ impl Sim {
                     _ => done.push(k),
                 }
             }
+            2 if service == 5 && self.agents[k].loaded => {
+                // at the station: puts the bike back in a dock, then home
+                let a = &mut self.agents[k];
+                a.hold_until = now + 20.0;
+                a.loaded = false;
+                a.dest = None;
+                a.job = Some((a.job.unwrap().0, 3));
+                let n = a.path.len();
+                if n >= 2 {
+                    let (p, q) = (self.g.xyz[a.path[n - 2] as usize], self.g.xyz[a.path[n - 1] as usize]);
+                    a.i = n - 2;
+                    a.s = ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
+                }
+            }
+            3 => {
+                let here = *self.agents[k].path.last().unwrap();
+                let home = self.agents[k].home;
+                match self.g.route(here, home, DRIVE, 20000) {
+                    Some(p) if p.len() >= 2 => {
+                        let a = &mut self.agents[k];
+                        a.path = p;
+                        a.i = 0;
+                        a.s = 0.0;
+                        a.v = 4.0;
+                        a.job = Some((a.job.unwrap().0, 4));
+                    }
+                    _ => done.push(k),
+                }
+            }
             _ => done.push(k),
         }
+    }
+
+    /// A player left their Naolib Vélo at (x, y): it stays there until the Naolib van takes it back to `station`.
+    pub fn leave_bike(&mut self, x: f32, y: f32, heading: f32, station: Option<[f32; 2]>, now: f64) -> Option<u32> {
+        let left: Vec<u32> = self.agents.iter().filter(|a| a.kind == Kind::Wreck && a.service & LEFT_BIKE != 0).map(|a| a.id).collect();
+        if left.len() >= MAX_LEFT_BIKES {
+            let oldest = left[0];
+            self.agents.retain(|a| a.id != oldest && a.job.is_none_or(|j| j.0 != oldest));
+        }
+        let id = self.place_static(Kind::Wreck, x, y, heading, LEFT_BIKE, now)?;
+        if let Some(a) = self.agents.iter_mut().find(|a| a.id == id) {
+            a.dest = station;
+        }
+        Some(id)
     }
 
     /// Once a second: call the tow truck for wrecks after a while, the ambulance for the injured if nobody came
@@ -1352,6 +1433,11 @@ impl Sim {
             let p = self.position(a);
             let (x, y) = (p[0] + a.jit[0], p[1] + a.jit[1]);
             match a.kind {
+                Kind::Wreck if a.service & LEFT_BIKE != 0 => {
+                    if now - a.since > FETCH_AFTER {
+                        calls.push((5, a.id, x, y));
+                    }
+                }
                 Kind::Wreck if a.service & 16 == 0 && now - a.since > TOW_AFTER => calls.push((3, a.id, x, y)),
                 Kind::Wreck if a.service & 16 != 0 && now - a.since > 20.0 => calls.push((0, a.id, x, y)),
                 Kind::Mark if now - a.since > MARK_TTL => calls.push((4, a.id, x, y)),
@@ -1367,7 +1453,7 @@ impl Sim {
         }
         // a wreck nobody could fetch in two hours (always at the cap): cleared anyway
         let before = self.agents.len();
-        self.agents.retain(|a| !(a.kind == Kind::Wreck && now - a.since > 7200.0));
+        self.agents.retain(|a| !(a.kind == Kind::Wreck && now - a.since > if a.service & LEFT_BIKE != 0 { 1800.0 } else { 7200.0 }));
         let _ = before;
     }
 
@@ -1465,8 +1551,16 @@ impl Sim {
         let (p, h, kind, v) = self.where_is(id)?;
         let model = match kind {
             Kind::Car => v % 16,
-            Kind::Emergency => 16 + (v & 7).min(4),
+            Kind::Emergency => 16 + (v & 7).min(5),
             Kind::Bike => 255,
+            Kind::Wreck if v & LEFT_BIKE != 0 => {
+                // a Naolib Vélo left in the street: back on it (the van, if on its way, goes home empty)
+                self.agents.retain(|a| a.id != id);
+                for a in self.agents.iter_mut().filter(|a| a.job.is_some_and(|j| j.0 == id && j.1 == 0)) {
+                    a.dest = None;
+                }
+                return Some((254, p, h));
+            }
             _ => return None,
         };
         self.agents.retain(|a| a.id != id);
@@ -1668,7 +1762,7 @@ impl Sim {
                 let z = pa[2] + (pb[2] - pa[2]) * f;
                 let variant = match a.kind {
                     Kind::Emergency => a.service + 8 * a.siren as u8 + 16 * a.loaded as u8,
-                    Kind::Wreck => a.service + if now - a.since < 240.0 { 32 } else { 0 },
+                    Kind::Wreck => a.service + if now - a.since < 240.0 && a.service & LEFT_BIKE == 0 { 32 } else { 0 },
                     Kind::Mark => 0,
                     Kind::Marcher => a.service + 4 * ((a.seed >> 8) as u8 % 60),
                     _ => (a.seed >> 8) as u8,
@@ -1742,6 +1836,13 @@ impl Sim {
         let base = a.base.and_then(|k| self.bases.get(k));
         let what = match (a.kind, a.plan) {
             (Kind::Car, _) => "roule".to_string(),
+            (Kind::Emergency, _) if a.service == 5 => match a.job.map(|j| j.1) {
+                Some(0) => "va chercher un vélo laissé dans la rue".to_string(),
+                Some(1) => "charge un vélo".to_string(),
+                Some(2) if a.loaded => "ramène un vélo à une station".to_string(),
+                Some(3) => "remet un vélo en station".to_string(),
+                _ => "rentre au dépôt".to_string(),
+            },
             (Kind::Emergency, _) => {
                 let at = base.map(|b| b.name.as_str()).filter(|n| !n.is_empty());
                 match (a.service, a.siren, at) {
@@ -1762,15 +1863,16 @@ impl Sim {
             _ => what,
         };
         let kind = match a.kind {
-            Kind::Emergency => ["ambulance", "police", "pompiers", "fourriere", "proprete"][a.service as usize % 5],
+            Kind::Emergency => ["ambulance", "police", "pompiers", "fourriere", "proprete", "naolib"][a.service as usize % 6],
             Kind::Marcher => "walker",
-            Kind::Wreck => if a.service & 16 != 0 { "down" } else { "wreck" },
+            Kind::Wreck => if a.service & LEFT_BIKE != 0 { "bike_left" } else if a.service & 16 != 0 { "down" } else { "wreck" },
             Kind::Mark => "mark",
             k => ["car", "walker", "bike"][k as usize],
         };
         let p = a.persona.as_deref();
+        let pos = { let q = self.position(a); [(q[0] + a.jit[0]).round(), (q[1] + a.jit[1]).round()] };
         Some(serde_json::json!({
-            "id": a.id, "kind": kind, "name": p.map(|p| p.first.clone()).unwrap_or_else(|| name_of(a.seed).to_string()),
+            "id": a.id, "kind": kind, "p": pos, "name": p.map(|p| p.first.clone()).unwrap_or_else(|| name_of(a.seed).to_string()),
             "doing": people::contract(&what), "place": poi.map(|p| &p.id), "speed": a.v,
             "persona": p.map(|p| serde_json::json!({
                 "name": p.full_name(), "age": p.age, "job": p.job, "quartier": p.quartier, "sub": p.sub,

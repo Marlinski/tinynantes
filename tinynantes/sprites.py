@@ -576,6 +576,34 @@ def sweeper():
     return m
 
 
+NAOLIB_GREEN, NAOLIB_YELLOW = (0.1, 0.55, 0.42), (1.0, 0.83, 0.0)
+
+
+def naolib_bike():
+    """A Naolib Vélo left standing in the street (nobody on it): light frame, green guards, yellow basket."""
+    m = Model()
+    K = 1.6
+    frame, rim, tyre = (0.86, 0.87, 0.86), (0.7, 0.72, 0.74), (0.08, 0.08, 0.09)
+    m.ring(-0.55 * K, 0.33 * K, 0.06 * K, tyre, rim)
+    m.ring(0.55 * K, 0.33 * K, 0.06 * K, tyre, rim)
+    m.box(-0.55 * K, 0.42 * K, -0.04 * K, 0.04 * K, 0.36 * K, 0.45 * K, frame)                       # step-through tube
+    m.box(-0.3 * K, -0.2 * K, -0.04 * K, 0.04 * K, 0.33 * K, 0.62 * K, frame)                        # seat post
+    m.box(-0.36 * K, -0.12 * K, -0.08 * K, 0.08 * K, 0.62 * K, 0.68 * K, DARK)                       # saddle
+    m.box(0.4 * K, 0.48 * K, -0.04 * K, 0.04 * K, 0.33 * K, 0.88 * K, frame)                         # fork, stem
+    m.box(0.38 * K, 0.46 * K, -0.28 * K, 0.28 * K, 0.86 * K, 0.92 * K, DARK)                         # handlebar
+    for xx in (-0.55, 0.55):                                                                          # mudguards
+        m.box((xx - 0.2) * K, (xx + 0.2) * K, -0.04 * K, 0.04 * K, 0.66 * K, 0.69 * K, NAOLIB_GREEN)
+    m.box(0.5 * K, 0.72 * K, -0.12 * K, 0.12 * K, 0.7 * K, 0.84 * K, NAOLIB_YELLOW)                  # basket
+    return m
+
+
+def naolib_van():
+    """The Naolib Vélo service van that brings bikes back to the stations: white, green and yellow bands."""
+    m = van_body((0.96, 0.96, 0.94), band=NAOLIB_GREEN, band2=NAOLIB_YELLOW, L=5.4, H=2.4)
+    m.box(-0.3, 0.3, -0.45, 0.45, 2.4, 2.52, (1.0, 0.62, 0.0))                                      # beacon
+    return m
+
+
 def taxi():
     m = car((0.12, 0.13, 0.15), "sedan")
     m.box(-0.35, 0.35, -0.3, 0.3, 0.28 + 0.62 + 0.55, 0.28 + 0.62 + 0.75, (1.0, 0.95, 0.75))   # roof sign
@@ -747,6 +775,8 @@ def catalogue():
     out.append(("ems_tow", tow_truck(), 10.0))
     out.append(("ems_tow_loaded", tow_truck(True), 10.0))
     out.append(("ems_sweeper", sweeper(), 10.0))
+    out.append(("ems_naolib", naolib_van(), 11.0))
+    out.append(("bike_naolib", naolib_bike(), 16.0))
     # boats: moving ones in 16 directions; moored landmarks in their one real heading (water.json)
     out.append(("boat_peniche", peniche(), 6.0))
     out.append(("boat_peniche2", peniche((0.45, 0.3, 0.2)), 6.0))

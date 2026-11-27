@@ -704,6 +704,18 @@ function inhabitantItems(t, rect) {
       out.push({ sx, sy, h: 1.5, lamps: vlamps(x, y, z, a, L, W - 0.1, 0.65), hit, draw: () => {
         shadow(x, y, z, a, L + 0.1, W);
         if (!sprite(name, x, y, z, a, id)) carModel(x, y, z, a, CAR_COLORS[c % CAR_COLORS.length]); } });
+    } else if (k === 3 && (c & 7) === 5) {
+      // the Naolib van, fetching a bike left in the street and taking it back to a station
+      const loaded = (c & 16) !== 0;
+      out.push({ sx, sy, h: 2.5, lamps: vlamps(x, y, z, a, 5.4, 1.85, 0.7), hit, draw: () => {
+        shadow(x, y, z, a, 5.5, 1.95);
+        if (!sprite("ems_naolib", x, y, z, a, id)) carModel(x, y, z, a, "#f2f2ee");
+      }, tip: () => ["Naolib Vélo : service de rééquilibrage", loaded ? "ramène un vélo à une station" : "va chercher un vélo laissé dans la rue"] });
+    } else if (k === 5 && (c & 128)) {
+      // a Naolib Vélo a player left in the street, until the van comes for it
+      out.push({ sx, sy, h: 1.2, hit, draw: () => {
+        if (!sprite("bike_naolib", x, y, z, a, id)) box(x, y, z + 0.3, a, 1.7, 0.12, 0.5, "#dcdcd8", "#1a8c6b");
+      }, tip: () => ["Naolib Vélo laissé là", "le fourgon Naolib passe le reprendre · E pour le reprendre"] });
     } else if (k === 3 && (c & 7) >= 3) {
       // the tow truck (fourrière; a wreck on its bed on the way back) and the street cleaners
       const service = c & 7, loaded = (c & 16) !== 0;
@@ -1002,7 +1014,7 @@ live.solids = (x, y, r = 30) => {
     const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
     if (k === 0) { const T = TRAFFIC[c % TRAFFIC.length]; out.push({ x: px, y: py, ang: a, L: T[1], W: T[2], kind: "car", id, vx, vy }); }
     else if (k === 3) out.push({ x: px, y: py, ang: a, L: (c & 7) === 2 ? 6.4 : 5.4, W: 2.1, kind: "service", id, vx, vy });
-    else if (k === 5) { if (c & 16) out.push({ x: px, y: py, ang: a, L: 1.7, W: 0.6, kind: "down", id, soft: true }); else out.push({ x: px, y: py, ang: a, L: 4.3, W: 1.8, kind: "wreck", id }); }
+    else if (k === 5) { if (c & 144) out.push({ x: px, y: py, ang: a, L: 1.7, W: 0.6, kind: "down", id, soft: true }); else out.push({ x: px, y: py, ang: a, L: 4.3, W: 1.8, kind: "wreck", id }); }
     else if (k === 2) out.push({ x: px, y: py, ang: a, L: 1.7, W: 0.6, kind: "bike", id, soft: true });
     else if (k === 1 || k === 4) out.push({ x: px, y: py, ang: a, L: 0.5, W: 0.5, kind: "person", id, soft: true });
   }

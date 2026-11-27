@@ -1101,7 +1101,8 @@ async fn feed_players(w: Arc<sim::World>, players: Arc<players::Players>) {
 #[derive(serde::Deserialize)]
 struct ImpactIn {
     token: String,
-    /// "crash" (the player's car blew up), "hit" (ran someone over), "jack" (takes a car)
+    /// "crash" (the player's car blew up), "hit" (ran someone over), "jack" (takes a car, or a Naolib Vélo
+    /// left in the street), "leave" (leaves their Naolib Vélo where they are)
     kind: String,
     /// the inhabitant involved
     id: Option<u32>,
@@ -1128,7 +1129,7 @@ async fn impact_h(State(t): State<TalkState>, axum::Json(q): axum::Json<ImpactIn
         let mut m = IMPACTS.lock().unwrap();
         let v = m.get_or_insert_with(HashMap::new).entry(player.clone()).or_default();
         v.retain(|&x| now - x < 20.0);
-        let limit = match q.kind.as_str() { "crash" => 2, "jack" => 4, _ => 12 };
+        let limit = match q.kind.as_str() { "crash" => 2, "jack" | "leave" => 4, _ => 12 };
         if v.len() >= limit {
             return bad(StatusCode::TOO_MANY_REQUESTS, "doucement");
         }
@@ -1140,11 +1141,28 @@ async fn impact_h(State(t): State<TalkState>, axum::Json(q): axum::Json<ImpactIn
     let ok = match q.kind.as_str() {
         "crash" => (mode.starts_with("car") && speed > 9.0) || (mode == "heli" && speed > 4.0),
         "hit" => mode.starts_with("car") && speed > 2.5,
+        // just got off the bike (the server may not have seen the change yet)
+        "leave" => (mode == "bike" || mode == "walk" || mode == "run") && speed < 12.0,
         _ => mode == "walk" || mode == "run",
     };
     if !ok {
-        crate::metrics::inc("tn_impacts_refused_total", &[("kind", if q.kind == "crash" { "crash" } else if q.kind == "hit" { "hit" } else { "jack" })], 1.0);
+        crate::metrics::inc("tn_impacts_refused_total", &[("kind", match q.kind.as_str() { "crash" => "crash", "hit" => "hit", "leave" => "leave", _ => "jack" })], 1.0);
         return bad(StatusCode::CONFLICT, "pas plausible");
+    }
+    if q.kind == "leave" {
+        // the van takes it back to the nearest station with a free dock
+        let station = {
+            let b = t.app.bikes.read().await;
+            b.stations.iter().filter(|s| s.renting && s.docks > 0)
+                .min_by(|a, b| {
+                    let d = |s: &bikes::Station| (s.p[0] - q.x).powi(2) + (s.p[1] - q.y).powi(2);
+                    d(a).partial_cmp(&d(b)).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|s| [s.p[0] as f32, s.p[1] as f32])
+        };
+        let id = t.world.sim.write().await.leave_bike(q.x as f32, q.y as f32, q.a as f32, station, now);
+        crate::metrics::inc("tn_bikes_left_total", &[], 1.0);
+        return axum::Json(serde_json::json!({ "left": id })).into_response();
     }
     let near = |id: u32, r: f32| t.world.came_near(id, q.x as f32, q.y as f32).is_some_and(|d| d < r);
     let ids_ok: Option<u32> = q.id.filter(|&id| near(id, match q.kind.as_str() { "crash" => 10.0, "hit" => 6.0, _ => 7.0 }));

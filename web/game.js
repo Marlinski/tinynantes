@@ -453,11 +453,12 @@ addEventListener("blur", () => keys.clear());
 
 function setMode(m) {
   if (me.ride) return toast("Descends d'abord (E à un arrêt)");
-  if (me.rental && m !== "bike") return toast(`Rends d'abord ton Naolib Vélo à une station (E)`);
+  const left = me.rental && m !== "bike" ? leaveBike(true) : "";
   if (me.mode === "heli" && m !== "heli" && me.alt > 3) return toast("Pose-toi d'abord (C pour descendre)");
   if (m === "car" && !onRoad(me.x, me.y)) return toast("Rejoins une rue pour prendre la voiture");
   if (room && m !== "walk") leave();
-  if (m === "heli" && me.mode !== "heli") { me.alt = 0; me.vx = me.vy = 0; me.climb = 60; toast("Décollage ! Espace monter · C descendre"); }
+  if (m === "heli" && me.mode !== "heli") { me.alt = 0; me.vx = me.vy = 0; me.climb = 60; toast(`${left}Décollage ! Espace monter · C descendre`); }
+  else if (left) toast(left);
   if (m !== "heli") me.alt = 0;
   if (m === "car" && me.mode !== "car") me.car = carSpec(myCarModel());
   me.mode = m; me.v = 0; hud();
@@ -750,7 +751,21 @@ function bikeAction(st) {
   live.rented[st.id] = (live.rented[st.id] || 0) + 1;
   me.rental = { id: st.id, name: st.name, t0: Date.now() };
   setMode("bike"); closeSide();
-  toast(`Naolib Vélo loué à ${st.name} ! Rends-le à n'importe quelle station (E). C'est pour de faux, ton vrai compte n'est pas touché.`);
+  toast(`Naolib Vélo loué à ${st.name} ! Rends-le à une station, ou laisse-le où tu veux (E). C'est pour de faux, ton vrai compte n'est pas touché.`);
+}
+
+// Get off a Naolib Vélo anywhere: it stays in the street (for everyone to see) until the Naolib van takes it back
+// to a station.
+function leaveBike(quiet) {
+  if (!me.rental) return "";
+  const min = Math.max(1, Math.round((Date.now() - me.rental.t0) / 60000));
+  impact({ kind: "leave", x: me.x, y: me.y, a: me.a });
+  me.rental = null;
+  const msg = `Naolib Vélo laissé ici (${min} min), le fourgon Naolib le ramènera à une station. `;
+  if (quiet) return msg;
+  setMode("walk");
+  toast(msg);
+  return msg;
 }
 
 // E: get on / off transit, talk to someone, or go into the place in front of you
@@ -784,6 +799,7 @@ function action() {
   // a Naolib Vélo station: rent, or bring the bike back
   const bs = nearestBikeStation();
   if (bs && (me.mode === "walk" || me.rental)) { bikeAction(bs); return; }
+  if (me.rental) { leaveBike(); return; }                         // no station here: leave it in the street
   // someone right next to you: talk
   const sim = nearestSim();
   if (sim && !room) { openTalk(sim.id); return; }
@@ -934,7 +950,9 @@ const SERVICE_CARS = [
   { name: "ems_fire", L: 6.4, W: 2.2, vmax: 31, acc: 4.5, brake: 8, turn: 0.8, label: "camion de pompiers", siren: true },
   { name: "tow", L: 6.6, W: 2.3, vmax: 30, acc: 5, brake: 9, turn: 0.85, label: "dépanneuse de la fourrière" },
   { name: "sweeper", L: 5.2, W: 2.1, vmax: 16, acc: 3, brake: 8, turn: 1.0, label: "balayeuse" },
+  { name: "ems_naolib", L: 5.4, W: 1.95, vmax: 30, acc: 6, brake: 9, turn: 1.0, label: "fourgon Naolib" },
 ];
+const SERVICE_NAMES = ["l'ambulance", "la voiture de police", "le camion de pompiers", "la dépanneuse", "la balayeuse", "le fourgon Naolib"];
 function carSpec(model) {
   if (model >= 16 && model < 16 + SERVICE_CARS.length) return { model, service: model - 16, ...SERVICE_CARS[model - 16] };
   const T = live.TRAFFIC[model % live.TRAFFIC.length], n = T[0];
@@ -1037,23 +1055,27 @@ function knock(s) {
 function nearestCar() {
   let best = null, bd = Infinity;
   for (const [id, k, x, y, , , , c] of live.people) {
-    if (k !== 0 && k !== 2 && k !== 3) continue;
+    const left = k === 5 && (c & 128);                       // a Naolib Vélo left in the street
+    if (k !== 0 && k !== 2 && k !== 3 && !left) continue;
     const d = Math.hypot(x - me.x, y - me.y);
-    if (d > (k === 2 ? 3 : 6)) continue;
+    if (d > (k === 2 || left ? 3 : 6)) continue;
     if (d < bd) { bd = d; best = { id, k, x, y, c }; }
   }
   return best;
 }
-const jackLabel = (t) => t.k === 2 ? "Piquer le vélo" : t.k === 3 ? `Voler ${["l'ambulance", "la voiture de police", "le camion de pompiers", "la dépanneuse", "la balayeuse"][Math.min(4, t.c & 7)]}` : "Voler la voiture";
+const jackLabel = (t) => t.k === 5 ? "Prendre le Naolib Vélo" : t.k === 2 ? "Piquer le vélo" : t.k === 3 ? `Voler ${SERVICE_NAMES[Math.min(5, t.c & 7)]}` : "Voler la voiture";
 async function carjack(car) {
   const j = await impact({ kind: "jack", id: car.id, x: me.x, y: me.y });
   if (!j || j.model == null) return toast("Raté, il est parti");
   if (room) leave();
   me.x = j.x; me.y = j.y; me.a = j.a; me.v = 0;
-  if (j.model === 255) { me.mode = "bike"; me.car = null; toast("Tu piques le vélo ! Son propriétaire s'enfuit en criant."); }
+  if (j.model === 254) {
+    me.mode = "bike"; me.car = null; me.rental = { id: null, name: "la rue", t0: Date.now() };
+    toast("Tu reprends le Naolib Vélo. Laisse-le où tu veux, ou rends-le à une station (E).");
+  } else if (j.model === 255) { me.mode = "bike"; me.car = null; toast("Tu piques le vélo ! Son propriétaire s'enfuit en criant."); }
   else {
     me.mode = "car"; me.car = carSpec(j.model);
-    toast(me.car.service != null ? `Tu prends ${["l'ambulance", "la voiture de police", "le camion de pompiers", "la dépanneuse", "la balayeuse"][me.car.service]} !${me.car.siren ? " Gyrophare allumé." : ""}` : `Tu prends le volant (${me.car.label}) ! Le conducteur s'enfuit.`);
+    toast(me.car.service != null ? `Tu prends ${SERVICE_NAMES[me.car.service]} !${me.car.siren ? " Gyrophare allumé." : ""}` : `Tu prends le volant (${me.car.label}) ! Le conducteur s'enfuit.`);
   }
   hud();
 }
